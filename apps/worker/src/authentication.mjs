@@ -1,4 +1,5 @@
 import { inspectSession, navigateToSource } from "./inspection.mjs";
+import { identityEntryAttributeSelector, identityEntryNamePattern } from "./identity.mjs";
 
 const credentialHosts = [
   "iam.education.lu",
@@ -27,17 +28,28 @@ async function firstVisible(locator) {
   return null;
 }
 
-async function clickIdentityEntry(page) {
+export async function clickIdentityEntry(page) {
   const candidate = await firstVisible(page.getByRole("button", {
-    name: /office\s*365|microsoft|iam|single sign.on|sso|sign in|log in|anmelden|connexion/i,
+    name: identityEntryNamePattern,
   }).or(page.getByRole("link", {
-    name: /office\s*365|microsoft|iam|single sign.on|sso|sign in|log in|anmelden|connexion/i,
-  })));
-  if (!candidate) return false;
+    name: identityEntryNamePattern,
+  })).or(page.locator(identityEntryAttributeSelector)).or(page.getByText(/^\s*IAM\s*$/i)));
+  if (!candidate) return null;
+
+  const popupPromise = page.waitForEvent("popup", { timeout: 5_000 }).catch(() => null);
   await candidate.click({ timeout: 12_000 });
-  await page.waitForLoadState("domcontentloaded", { timeout: 20_000 }).catch(() => undefined);
-  await page.waitForTimeout(800);
-  return true;
+  const popup = await popupPromise;
+  const destination = popup ?? page;
+  await destination.waitForLoadState("domcontentloaded", { timeout: 20_000 }).catch(() => undefined);
+  if (popup) {
+    for (let attempt = 0; attempt < 40 && !destination.isClosed(); attempt += 1) {
+      if (isAllowedCredentialHost(destination.url()) || await hasCredentialField(destination)) break;
+      await destination.waitForTimeout(250).catch(() => undefined);
+    }
+  }
+  await destination.bringToFront().catch(() => undefined);
+  await destination.waitForTimeout(800).catch(() => undefined);
+  return destination;
 }
 
 async function clickNextOrSubmit(page) {
@@ -46,7 +58,7 @@ async function clickNextOrSubmit(page) {
   }).or(page.locator('input[type="submit"]')));
   if (!button) return false;
   await button.click({ timeout: 12_000 });
-  await page.waitForTimeout(1_100);
+  await page.waitForTimeout(1_100).catch(() => undefined);
   return true;
 }
 
@@ -62,18 +74,20 @@ async function hasCredentialField(page) {
 }
 
 export async function ensureAuthenticated(page, source, credentials) {
+  const sourcePage = page;
+  let authPage = page;
   let health = await navigateToSource(page, source);
   if (!health.requiresUserAction) return health;
 
-  if (!isAllowedCredentialHost(page.url()) || !await hasCredentialField(page)) {
-    await clickIdentityEntry(page);
+  if (!isAllowedCredentialHost(authPage.url()) || !await hasCredentialField(authPage)) {
+    authPage = await clickIdentityEntry(authPage) ?? authPage;
   }
 
-  if (!isAllowedCredentialHost(page.url())) {
+  if (!isAllowedCredentialHost(authPage.url())) {
     return { ...health, state: "auth_required", requiresUserAction: true };
   }
 
-  const usernameInput = await firstVisible(page.locator([
+  const usernameInput = await firstVisible(authPage.locator([
     'input[type="email"]',
     'input[name="loginfmt"]',
     'input[name*="user" i]',
@@ -81,38 +95,47 @@ export async function ensureAuthenticated(page, source, credentials) {
   ].join(", ")));
   if (usernameInput) {
     await usernameInput.fill(credentials.username);
-    await clickNextOrSubmit(page);
+    await clickNextOrSubmit(authPage);
   }
 
-  if (!isAllowedCredentialHost(page.url())) {
-    health = await inspectSession(page, source);
+  if (!authPage.isClosed() && !isAllowedCredentialHost(authPage.url())) {
+    health = await inspectSession(authPage, source);
     return health;
   }
 
-  const passwordInput = await firstVisible(page.locator('input[type="password"]'));
+  const passwordInput = authPage.isClosed() ? null : await firstVisible(authPage.locator('input[type="password"]'));
   if (!passwordInput) {
-    if (await detectsMfa(page)) {
-      return { ...await inspectSession(page, source), state: "mfa_required", requiresUserAction: true };
+    if (!authPage.isClosed() && await detectsMfa(authPage)) {
+      return { ...await inspectSession(authPage, source), state: "mfa_required", requiresUserAction: true };
     }
-    return { ...await inspectSession(page, source), state: "auth_required", requiresUserAction: true };
+    if (authPage !== sourcePage && authPage.isClosed()) {
+      await sourcePage.waitForTimeout(2_000).catch(() => undefined);
+      const sourceHealth = await inspectSession(sourcePage, source);
+      if (!sourceHealth.requiresUserAction) return sourceHealth;
+    }
+    return { ...await inspectSession(sourcePage, source), state: "auth_required", requiresUserAction: true };
   }
 
-  if (!isAllowedCredentialHost(page.url())) {
+  if (!isAllowedCredentialHost(authPage.url())) {
     throw new Error("Refusing to enter IAM credentials on a non-allowlisted host.");
   }
   await passwordInput.fill(credentials.password);
-  await clickNextOrSubmit(page);
+  await clickNextOrSubmit(authPage);
 
-  if (await detectsMfa(page)) {
-    return { ...await inspectSession(page, source), state: "mfa_required", requiresUserAction: true };
+  if (!authPage.isClosed() && await detectsMfa(authPage)) {
+    return { ...await inspectSession(authPage, source), state: "mfa_required", requiresUserAction: true };
   }
 
-  const staySignedIn = await firstVisible(page.getByRole("button", { name: /^(yes|oui|ja)$/i }));
-  if (staySignedIn && isAllowedCredentialHost(page.url())) {
+  const staySignedIn = authPage.isClosed() ? null : await firstVisible(authPage.getByRole("button", { name: /^(yes|oui|ja)$/i }));
+  if (staySignedIn && isAllowedCredentialHost(authPage.url())) {
     await staySignedIn.click({ timeout: 8_000 });
   }
 
-  await page.waitForTimeout(2_000);
-  health = await inspectSession(page, source);
+  if (authPage !== sourcePage && !authPage.isClosed()) {
+    await authPage.waitForEvent("close", { timeout: 12_000 }).catch(() => undefined);
+  }
+  await sourcePage.bringToFront().catch(() => undefined);
+  await sourcePage.waitForTimeout(2_000).catch(() => undefined);
+  health = await inspectSession(sourcePage, source);
   return health;
 }

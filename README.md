@@ -104,9 +104,12 @@ completed safely:
 .\scripts\jarvis.ps1 sync webuntis
 ```
 
-If automatic authentication needs troubleshooting, the visible window uses the
-same exact-host allowlist as headless mode and stops for MFA. Manual login is
-also available with `.\scripts\jarvis.ps1 login webuntis`.
+For WebUntis, Jarvis selects the `IAM` identity-provider option and follows its
+separate SSL Education login window. Credentials are filled only after the
+destination matches an exact allowlisted host. If automatic authentication
+needs troubleshooting, headed mode pauses for you to complete MFA, consent, or
+an unfamiliar provider screen before it verifies the school page. Manual login
+is also available with `.\scripts\jarvis.ps1 login webuntis`.
 
 Start the worker in the current terminal, or install a current-user Task
 Scheduler entry that starts at Windows sign-in:

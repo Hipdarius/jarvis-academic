@@ -204,7 +204,18 @@ async function authenticate(target, { headless = true } = {}) {
     throw new Error("Password login is not configured. Run npm run setup:iam on Windows or mount the NAS IAM secret file.");
   }
   for (const source of targets(target)) {
-    const result = await withBrowser(headless, (page) => ensureAuthenticated(page, source, credentials));
+    const result = await withBrowser(headless, async (page) => {
+      let authentication = await ensureAuthenticated(page, source, credentials);
+      if (!headless && authentication.requiresUserAction && process.stdin.isTTY) {
+        console.log(`\n${source.label} needs a manual step (${authentication.state}).`);
+        console.log("Complete IAM selection, MFA, or consent in the visible browser. Do not type credentials in this terminal.");
+        const prompt = createInterface({ input: process.stdin, output: process.stdout });
+        await prompt.question("Press Enter after the school page is fully open... ");
+        prompt.close();
+        authentication = await navigateToSource(page, source);
+      }
+      return authentication;
+    });
     await writeJson(path.join(workerConfig.stateDirectory, "health", `${source.key}.json`), result);
     console.log(JSON.stringify(result, null, 2));
   }

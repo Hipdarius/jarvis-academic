@@ -1,3 +1,5 @@
+import { identityEntryAttributeSelector, identityEntryNamePattern } from "./identity.mjs";
+
 const loginHosts = [
   "iam.education.lu",
   "login.education.lu",
@@ -37,9 +39,11 @@ export async function inspectSession(page, source) {
   const passwordVisible = await page.locator('input[type="password"]:visible').count().catch(() => 0);
   const usernameVisible = await page.locator('input[name*="user" i]:visible, input[type="email"]:visible').count().catch(() => 0);
   const loginEntryVisible = await page.getByRole("button", {
-    name: /office\s*365|microsoft|iam|single sign.on|sso|sign in|log in|anmelden|connexion/i,
+    name: identityEntryNamePattern,
   }).count().catch(() => 0);
-  const authRequired = looksLikeLoginUrl(page.url()) || passwordVisible > 0 || usernameVisible > 0 || loginEntryVisible > 0;
+  const identityTileVisible = await page.locator(identityEntryAttributeSelector).count().catch(() => 0)
+    + await page.getByText(/^\s*IAM\s*$/i).count().catch(() => 0);
+  const authRequired = looksLikeLoginUrl(page.url()) || passwordVisible > 0 || usernameVisible > 0 || loginEntryVisible > 0 || identityTileVisible > 0;
 
   return {
     source: source.key,

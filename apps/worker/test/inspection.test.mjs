@@ -3,6 +3,7 @@ import test from "node:test";
 
 import { looksLikeLoginUrl, redactText, redactUrl } from "../src/inspection.mjs";
 import { isAllowedCredentialHost } from "../src/authentication.mjs";
+import { identityEntryAttributeSelector, identityEntryNamePattern } from "../src/identity.mjs";
 
 test("recognizes IAM and Microsoft identity pages", () => {
   assert.equal(looksLikeLoginUrl("https://iam.education.lu/login"), true);
@@ -30,4 +31,10 @@ test("IAM credentials are restricted to known identity hosts", () => {
   assert.equal(isAllowedCredentialHost("https://iam.education.lu.example.com/login"), false);
   assert.equal(isAllowedCredentialHost("https://signin.iam.education.lu/login"), false);
   assert.equal(isAllowedCredentialHost("https://login.microsoftonline.com.evil.example/tenant"), false);
+});
+
+test("recognizes the standalone WebUntis IAM provider choice", () => {
+  assert.equal(identityEntryNamePattern.test("IAM"), true);
+  assert.equal(identityEntryNamePattern.test("Login with IAM"), true);
+  assert.match(identityEntryAttributeSelector, /value\*=\"iam\"/i);
 });
