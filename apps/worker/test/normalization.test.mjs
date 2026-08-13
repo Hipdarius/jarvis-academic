@@ -21,6 +21,16 @@ test("normalizes a WebUntis homework row without inventing a subject", () => {
   assert.equal(items[0].evidence, "source_derived");
 });
 
+test("keeps WebUntis inbox messages as announcements even when they mention exams", () => {
+  const items = normalizeWebUntisSections([{
+    label: "Mitteilungen",
+    items: [{ text: "Sport 12.05. The hall is closed because of the final exams.", cells: [], href: "" }],
+  }], reference);
+  assert.equal(items.length, 1);
+  assert.equal(items[0].type, "announcement");
+  assert.equal(items[0].dueAt, undefined);
+});
+
 test("ignores Moodle course navigation but keeps assignment links", () => {
   const items = normalizeMoodleRows("academy", [
     { text: "Math course", href: "https://academy.am.lu/course/view.php", cells: [] },

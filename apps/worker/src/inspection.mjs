@@ -1,6 +1,7 @@
 import { identityEntryAttributeSelector, identityEntryNamePattern } from "./identity.mjs";
 
 const loginHosts = [
+  "auth.education.lu",
   "iam.education.lu",
   "login.education.lu",
   "login.microsoftonline.com",

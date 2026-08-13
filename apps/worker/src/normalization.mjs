@@ -53,9 +53,9 @@ function rowTitle(row, fallback) {
 }
 
 function typeFor(bucket, text) {
+  if (/mitteilung|announcement|news/i.test(bucket)) return "announcement";
   if (presentationSignal.test(text)) return "presentation";
   if (/prüfung|exam|examen|test/i.test(bucket) || /\b(exam|examen|prüfung|test)\b/i.test(text)) return "test";
-  if (/mitteilung|announcement|news/i.test(bucket)) return "announcement";
   if (/lesson|stunde|timetable|stundenplan/i.test(bucket)) return "lesson";
   if (/homework|hausaufgabe|assignment|devoir/i.test(bucket) || explicitTask.test(text)) return "homework";
   return null;
@@ -85,7 +85,7 @@ function normalizeRow({ source, sourceKind, bucket, row, reference }) {
   };
   if (lastDate) {
     if (resolvedType === "lesson") item.startsAt = lastDate.toISOString();
-    else item.dueAt = lastDate.toISOString();
+    else if (resolvedType !== "announcement") item.dueAt = lastDate.toISOString();
   }
   return item;
 }

@@ -15,11 +15,40 @@ async function firstVisibleExactText(page, label) {
   return null;
 }
 
+async function waitForNavigationOverlay(page) {
+  await page.waitForFunction(() => {
+    const overlays = document.querySelectorAll(".overlay, [class*='overlay' i], [class*='backdrop' i]");
+    return Array.from(overlays).every((element) => {
+      const style = window.getComputedStyle(element);
+      const rect = element.getBoundingClientRect();
+      return style.display === "none"
+        || style.visibility === "hidden"
+        || style.pointerEvents === "none"
+        || rect.width === 0
+        || rect.height === 0;
+    });
+  }, undefined, { timeout: 12_000 }).catch(() => undefined);
+}
+
+async function activateNavigationItem(page, locator) {
+  await waitForNavigationOverlay(page);
+  try {
+    await locator.click({ timeout: 8_000 });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (!/intercepts pointer events|not stable/i.test(message)) throw error;
+    await locator.evaluate((element) => {
+      const target = element.closest("a, button") ?? element;
+      target.click();
+    });
+  }
+}
+
 async function readSection(page, label) {
   const link = await firstVisibleExactText(page, label);
   if (!link) return { label, state: "navigation_not_found", items: [] };
 
-  await link.click({ timeout: 15_000 });
+  await activateNavigationItem(page, link);
   await page.waitForLoadState("domcontentloaded", { timeout: 15_000 }).catch(() => undefined);
   await page.waitForTimeout(900);
 

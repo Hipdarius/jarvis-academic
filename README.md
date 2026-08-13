@@ -104,11 +104,16 @@ completed safely:
 .\scripts\jarvis.ps1 sync webuntis
 ```
 
-For WebUntis, Jarvis selects the `IAM` identity-provider option and follows its
-separate SSL Education login window. Credentials are filled only after the
-destination matches an exact allowlisted host. If automatic authentication
-needs troubleshooting, headed mode pauses for you to complete MFA, consent, or
-an unfamiliar provider screen before it verifies the school page. Manual login
+For WebUntis and Moodle, Jarvis selects the `IAM` identity-provider option even
+when the portal also shows local username/password fields. On the separate SSL
+Education page it submits the IAM username, waits for the password step, then
+submits the password. For Microsoft 365 it first submits `<IAM username>@school.lu`
+at Microsoft, follows the redirect, and performs the same two-step IAM login.
+The password is filled only on exact Education IAM hosts (`auth.education.lu`,
+`iam.auth.education.lu`, and the documented IAM aliases), never on Microsoft,
+WebUntis, or a local Moodle form. If automatic authentication needs
+troubleshooting, headed mode pauses for you to complete MFA, consent, or an
+unfamiliar provider screen before it verifies the school page. Manual login
 is also available with `.\scripts\jarvis.ps1 login webuntis`.
 
 Start the worker in the current terminal, or install a current-user Task
