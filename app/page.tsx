@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
+import { type FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import {
   AlertTriangle,
   ArrowRight,
@@ -9,17 +9,15 @@ import {
   BrainCircuit,
   CalendarDays,
   Check,
-  ChevronRight,
-  CircleHelp,
+  CheckCircle2,
   ClipboardCopy,
   Clock3,
-  Command,
-  CornerDownLeft,
   Database,
   FileText,
   FolderKanban,
   Gauge,
   GraduationCap,
+  Inbox,
   KeyRound,
   LayoutDashboard,
   Lightbulb,
@@ -38,6 +36,15 @@ import {
   type LucideIcon,
 } from "lucide-react";
 
+import {
+  activeDashboardItems,
+  dashboardItemDate,
+  evidenceLabel,
+  filterPlannerItems,
+  inboxDashboardItems,
+  scheduledDashboardItems,
+  type PlannerFilter,
+} from "@/app/lib/dashboard-view";
 import type { CommandIntent } from "@/packages/core/src/command-router";
 import type {
   DashboardItem,
@@ -49,7 +56,7 @@ type NavItem = { label: string; icon: LucideIcon };
 type CommandResponse = CommandIntent & { stored: boolean; queuedJobId: string | null };
 
 const commandExamples = [
-  "Algebra book exercises 4–8 for Friday",
+  "Algebra exercises 4-8 for Friday",
   "What if I built a CubeSat radiation monitor?",
   "Study SQL normalization for 30 minutes tomorrow",
 ];
@@ -69,23 +76,23 @@ const providerNames: Record<CommandIntent["provider"], string> = {
   nous: "Nous Portal",
   openrouter: "OpenRouter",
   anthropic: "Anthropic",
-  local: "local safety router",
+  local: "local router",
 };
+
+const plannerFilters: Array<{ id: PlannerFilter; label: string }> = [
+  { id: "all", label: "All" },
+  { id: "work", label: "Work" },
+  { id: "deadlines", label: "Deadlines" },
+  { id: "announcements", label: "Updates" },
+];
 
 function dateKey(value: Date) {
   return `${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, "0")}-${String(value.getDate()).padStart(2, "0")}`;
 }
 
-function itemDate(item: DashboardItem) {
-  const value = item.dueAt ?? item.startsAt;
-  if (!value) return null;
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? null : date;
-}
-
 function formatItemDate(item: DashboardItem) {
-  const date = itemDate(item);
-  if (!date) return item.dueLabel ?? "Date not confirmed";
+  const date = dashboardItemDate(item);
+  if (!date) return item.dueLabel ?? "Unscheduled";
   return new Intl.DateTimeFormat(undefined, {
     weekday: "short",
     day: "numeric",
@@ -95,11 +102,22 @@ function formatItemDate(item: DashboardItem) {
   }).format(date);
 }
 
+function formatFreshness(value: string | null | undefined) {
+  if (!value) return "No successful read yet";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "Freshness unavailable";
+  const deltaMinutes = Math.max(0, Math.round((Date.now() - date.getTime()) / 60_000));
+  if (deltaMinutes < 1) return "Updated just now";
+  if (deltaMinutes < 60) return `Updated ${deltaMinutes} min ago`;
+  if (deltaMinutes < 1_440) return `Updated ${Math.round(deltaMinutes / 60)} hr ago`;
+  return `Updated ${new Intl.DateTimeFormat(undefined, { day: "numeric", month: "short" }).format(date)}`;
+}
+
 function relativeSourceDetail(source: DashboardSource) {
   if (!source.lastSuccessAt) return source.detail;
   const date = new Date(source.lastSuccessAt);
   if (Number.isNaN(date.getTime())) return source.detail;
-  return `Last read ${new Intl.DateTimeFormat(undefined, {
+  return `Read ${new Intl.DateTimeFormat(undefined, {
     day: "numeric",
     month: "short",
     hour: "2-digit",
@@ -114,8 +132,43 @@ function sourceTone(status: DashboardSource["status"]) {
   return "idle";
 }
 
+function itemTypeLabel(type: DashboardItem["type"]) {
+  return type.replaceAll("_", " ");
+}
+
 function SourceMark({ source }: { source: DashboardSource }) {
   return <span className={`source-mark ${sourceTone(source.status)}`} aria-hidden="true" />;
+}
+
+function EvidenceBadge({ item }: { item: DashboardItem }) {
+  return (
+    <span className={`evidence-badge ${item.evidence}`} title={`${item.confidence}% confidence`}>
+      <ShieldCheck size={12} />
+      {evidenceLabel(item.evidence)}
+    </span>
+  );
+}
+
+function AcademicItemRow({ item, compact = false }: { item: DashboardItem; compact?: boolean }) {
+  const Icon = item.type === "announcement" ? Inbox : item.type === "personal" ? Clock3 : FileText;
+  return (
+    <article className={`academic-row ${compact ? "compact" : ""}`}>
+      <span className={`academic-icon ${item.type}`} aria-hidden="true"><Icon size={17} /></span>
+      <div className="academic-main">
+        <div className="academic-origin"><span>{item.subject}</span><span>{item.source}</span></div>
+        <h3>{item.title}</h3>
+        {!compact && item.description ? <p>{item.description}</p> : null}
+        <div className="trust-row">
+          <EvidenceBadge item={item} />
+          <span>{item.confidence}% confidence</span>
+        </div>
+      </div>
+      <div className="academic-when">
+        <strong>{formatItemDate(item)}</strong>
+        <span>{itemTypeLabel(item.type)}</span>
+      </div>
+    </article>
+  );
 }
 
 function EmptyState({
@@ -132,8 +185,8 @@ function EmptyState({
   onAction?: () => void;
 }) {
   return (
-    <div className="collection-empty honest-empty">
-      <Icon size={27} />
+    <div className="empty-state">
+      <span><Icon size={24} /></span>
       <h2>{title}</h2>
       <p>{copy}</p>
       {action && onAction ? <button onClick={onAction} type="button">{action}</button> : null}
@@ -146,6 +199,8 @@ export default function Home() {
   const [state, setState] = useState<DashboardState | null>(null);
   const [stateError, setStateError] = useState("");
   const [stateLoading, setStateLoading] = useState(true);
+  const [plannerFilter, setPlannerFilter] = useState<PlannerFilter>("all");
+  const [plannerQuery, setPlannerQuery] = useState("");
   const [commandOpen, setCommandOpen] = useState(false);
   const [commandText, setCommandText] = useState("");
   const [commandPending, setCommandPending] = useState(false);
@@ -157,40 +212,48 @@ export default function Home() {
   const [copied, setCopied] = useState(false);
   const [currentDate, setCurrentDate] = useState<Date | null>(null);
 
-  const loadState = useCallback(async () => {
-    setStateLoading(true);
+  const loadState = useCallback(async (silent = false) => {
+    if (!silent) setStateLoading(true);
     try {
       const response = await fetch("/api/state", { cache: "no-store" });
       const payload = await response.json() as DashboardState;
       setState(payload);
       setStateError(payload.mode === "database_unavailable"
-        ? "The live database is not available in this environment. No sample data has been substituted."
+        ? "The live database is unavailable here. Jarvis has not substituted sample data."
         : "");
     } catch {
       setState(null);
-      setStateError("Jarvis could not load the live database. No sample data has been substituted.");
+      setStateError("Jarvis could not read the live database. No sample data has been substituted.");
     } finally {
-      setStateLoading(false);
+      if (!silent) setStateLoading(false);
     }
   }, []);
 
   useEffect(() => {
     const initialLoad = window.setTimeout(() => { void loadState(); }, 0);
-    const clockLoad = window.setTimeout(() => setCurrentDate(new Date()), 0);
+    const initialClock = window.setTimeout(() => setCurrentDate(new Date()), 0);
+    const clock = window.setInterval(() => setCurrentDate(new Date()), 60_000);
+    const refresh = window.setInterval(() => { void loadState(true); }, 60_000);
+    const refreshOnFocus = () => { void loadState(true); };
+    window.addEventListener("focus", refreshOnFocus);
     return () => {
       window.clearTimeout(initialLoad);
-      window.clearTimeout(clockLoad);
+      window.clearTimeout(initialClock);
+      window.clearInterval(clock);
+      window.clearInterval(refresh);
+      window.removeEventListener("focus", refreshOnFocus);
     };
   }, [loadState]);
+
+  useEffect(() => {
+    document.title = `${activeSection} | Academic Jarvis`;
+  }, [activeSection]);
 
   useEffect(() => {
     function handleKeyboard(event: KeyboardEvent) {
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
         event.preventDefault();
-        setCommandText("");
-        setCommandResult(null);
-        setCommandError("");
-        setCommandOpen(true);
+        openCommand();
       }
       if (event.key === "Escape") setCommandOpen(false);
     }
@@ -198,18 +261,25 @@ export default function Home() {
     return () => window.removeEventListener("keydown", handleKeyboard);
   }, []);
 
-  const activeItems = useMemo(
-    () => (state?.items ?? [])
-      .filter((item) => item.status !== "done" && item.status !== "cancelled")
-      .sort((a, b) => (itemDate(a)?.getTime() ?? Number.MAX_SAFE_INTEGER) - (itemDate(b)?.getTime() ?? Number.MAX_SAFE_INTEGER)),
-    [state],
+  const activeItems = useMemo(() => activeDashboardItems(state?.items ?? []), [state]);
+  const scheduledItems = useMemo(() => scheduledDashboardItems(state?.items ?? []), [state]);
+  const inboxItems = useMemo(() => inboxDashboardItems(state?.items ?? []), [state]);
+  const filteredPlannerItems = useMemo(
+    () => filterPlannerItems(state?.items ?? [], plannerFilter, plannerQuery),
+    [plannerFilter, plannerQuery, state],
   );
-  const todayItems = activeItems.filter((item) => {
-    const date = itemDate(item);
+  const todayItems = scheduledItems.filter((item) => {
+    const date = dashboardItemDate(item);
     return date && currentDate ? dateKey(date) === dateKey(currentDate) : false;
   });
-  const nextDeadline = activeItems.find((item) => itemDate(item)) ?? activeItems[0] ?? null;
+  const nextDeadline = scheduledItems[0] ?? null;
   const healthySources = (state?.sources ?? []).filter((source) => source.status === "healthy").length;
+  const totalSources = Math.max(state?.sources.length ?? 0, 4);
+  const dashboardFreshness = state?.mode === "live"
+    ? formatFreshness(state.generatedAt)
+    : state?.mode === "database_unavailable"
+      ? "Live database unavailable"
+      : "Waiting for live state";
   const subjectGroups = useMemo(() => {
     const grouped = new Map<string, DashboardItem[]>();
     for (const item of state?.items ?? []) grouped.set(item.subject, [...(grouped.get(item.subject) ?? []), item]);
@@ -240,7 +310,7 @@ export default function Home() {
         throw new Error("error" in payload ? payload.error : "Jarvis could not route that command.");
       }
       setCommandResult(payload);
-      if (payload.stored) await loadState();
+      if (payload.stored) await loadState(true);
     } catch (error) {
       setCommandError(error instanceof Error ? error.message : "Jarvis could not route that command.");
     } finally {
@@ -284,100 +354,124 @@ export default function Home() {
   }
 
   function renderToday() {
-    const totalSources = state?.sources.length || 4;
-    const greeting = !currentDate ? "Welcome back" : currentDate.getHours() < 12 ? "Good morning" : currentDate.getHours() < 18 ? "Good afternoon" : "Good evening";
+    const greeting = !currentDate
+      ? "Welcome back"
+      : currentDate.getHours() < 12
+        ? "Good morning"
+        : currentDate.getHours() < 18
+          ? "Good afternoon"
+          : "Good evening";
+    const focusTitle = nextDeadline
+      ? nextDeadline.title
+      : healthySources
+        ? "No verified deadlines right now."
+        : "Waiting for the first verified sync.";
+    const focusCopy = nextDeadline
+      ? `${nextDeadline.subject} / ${nextDeadline.source}`
+      : healthySources
+        ? "School notices remain in the inbox until they contain actionable work or a confirmed date."
+        : "Open Systems to finish the local worker connection.";
+
     return (
       <>
-        <section className="welcome-row">
+        <section className="page-heading today-heading">
           <div>
-            <p className="eyebrow">{currentDate ? new Intl.DateTimeFormat(undefined, { weekday: "long", day: "numeric", month: "long" }).format(currentDate).toUpperCase() : "ACADEMIC COMMAND CENTER"}</p>
+            <p className="eyebrow">{currentDate ? new Intl.DateTimeFormat(undefined, { weekday: "long", day: "numeric", month: "long" }).format(currentDate) : "Academic workspace"}</p>
             <h1>{greeting}, Darius.</h1>
-            <p className="welcome-copy">
-              {stateLoading
-                ? "Loading your academic system…"
-                : healthySources
-                  ? `${healthySources} of ${totalSources} school sources are reporting live data.`
-                  : "No school source has completed its first verified sync yet."}
-            </p>
+            <p>{stateLoading ? "Reading verified school data..." : `${healthySources} of ${totalSources} sources reporting. ${dashboardFreshness}`}</p>
           </div>
-          <div className="day-score honest-score">
-            <span className="score-ring">{healthySources}/{totalSources}</span>
-            <span><strong>Sources live</strong><small>{activeItems.length} open items</small></span>
-          </div>
-        </section>
-
-        {stateError ? (
-          <div className="truth-banner"><AlertTriangle size={17} /><span>{stateError}</span><button onClick={() => void loadState()} type="button">Retry</button></div>
-        ) : null}
-
-        <section className={`focus-card ${nextDeadline ? "" : "focus-empty"}`}>
-          <div className="focus-glow" />
-          <div className="focus-icon">{nextDeadline ? <Sparkles size={20} /> : <Unplug size={20} />}</div>
-          <div className="focus-copy">
-            <span className="eyebrow light">{nextDeadline ? "NEXT VERIFIED ITEM" : "WAITING FOR FIRST SYNC"}</span>
-            <h2>{nextDeadline ? nextDeadline.title : "Connect the IAM browser worker to begin."}</h2>
-            <p>{nextDeadline
-              ? `${nextDeadline.subject} · ${nextDeadline.source} · ${formatItemDate(nextDeadline)} · ${nextDeadline.evidence} evidence`
-              : "Jarvis will not invent a schedule. Once the worker reads WebUntis, Teams, and Moodle, real assignments will appear here."}</p>
-            {nextDeadline ? (
-              <div className="focus-tags">
-                <span><Clock3 size={14} /> {formatItemDate(nextDeadline)}</span>
-                <span><FileText size={14} /> {nextDeadline.source}</span>
-                <span><ShieldCheck size={14} /> {nextDeadline.confidence}% confidence</span>
-              </div>
-            ) : null}
-          </div>
-          <button className="focus-action" onClick={() => nextDeadline ? setActiveSection("Planner") : setActiveSection("Systems")} type="button">
-            {nextDeadline ? <ChevronRight size={18} /> : <KeyRound size={18} />}
-            {nextDeadline ? "Open in planner" : "Set up worker"}
+          <button className="quiet-action" onClick={() => void loadState()} type="button">
+            <RefreshCw className={stateLoading ? "spin" : ""} size={16} />
+            Refresh
           </button>
         </section>
 
-        <section className="metric-grid" aria-label="Today at a glance">
-          <article className="metric-card"><span className="metric-icon indigo"><ListTodo size={19} /></span><div><strong>{todayItems.length}</strong><span>due today</span></div><small>Verified or manually captured</small></article>
-          <article className="metric-card"><span className="metric-icon emerald"><CalendarDays size={19} /></span><div><strong>{activeItems.length}</strong><span>open items</span></div><small>Across every connected source</small></article>
-          <article className="metric-card"><span className="metric-icon amber"><ShieldCheck size={19} /></span><div><strong>{healthySources}</strong><span>healthy sources</span></div><small>No fixture connectors</small></article>
+        {stateError ? (
+          <div className="truth-banner" role="alert">
+            <AlertTriangle size={17} />
+            <span>{stateError}</span>
+            <button onClick={() => void loadState()} type="button">Retry</button>
+          </div>
+        ) : null}
+
+        <section className={`focus-band ${nextDeadline ? "has-work" : "is-clear"}`}>
+          <span className="focus-symbol">{nextDeadline ? <Clock3 size={20} /> : healthySources ? <CheckCircle2 size={20} /> : <Unplug size={20} />}</span>
+          <div className="focus-copy">
+            <p className="eyebrow">{nextDeadline ? "Next scheduled item" : healthySources ? "Schedule clear" : "Worker status"}</p>
+            <h2>{focusTitle}</h2>
+            <p>{focusCopy}</p>
+            {nextDeadline ? (
+              <div className="focus-meta">
+                <span><CalendarDays size={14} />{formatItemDate(nextDeadline)}</span>
+                <EvidenceBadge item={nextDeadline} />
+                <span>{nextDeadline.confidence}% confidence</span>
+              </div>
+            ) : null}
+          </div>
+          <button onClick={() => setActiveSection(nextDeadline || healthySources ? "Planner" : "Systems")} type="button">
+            {nextDeadline || healthySources ? "Open planner" : "Open systems"}<ArrowRight size={16} />
+          </button>
         </section>
 
-        <div className="dashboard-grid">
-          <section className="panel agenda-panel">
-            <div className="panel-heading"><div><span className="eyebrow">REAL DATA ONLY</span><h2>Open work</h2></div><button onClick={() => setActiveSection("Planner")} type="button">Open planner <ArrowRight size={15} /></button></div>
-            {activeItems.length ? (
-              <div className="timeline">
-                {activeItems.slice(0, 7).map((item, index) => (
-                  <article className="timeline-item" key={item.id}>
-                    <div className="time-column"><strong>{item.dueAt ? "Due" : item.startsAt ? "Starts" : "Inbox"}</strong><small>{formatItemDate(item)}</small></div>
-                    <div className="timeline-rail"><span className={item.type === "test" ? "captured-dot" : item.type === "personal" ? "study" : "focus"} />{index < Math.min(activeItems.length, 7) - 1 ? <i /> : null}</div>
-                    <div className="timeline-copy"><span>{item.subject} · {item.source}</span><h3>{item.title}</h3></div>
-                    <button aria-label={`Open ${item.title}`} onClick={() => setActiveSection("Planner")} type="button"><ChevronRight size={18} /></button>
-                  </article>
-                ))}
+        <section className="overview-strip" aria-label="Academic overview">
+          <div><strong>{todayItems.length}</strong><span>Due today</span></div>
+          <div><strong>{scheduledItems.length}</strong><span>Scheduled</span></div>
+          <div><strong>{inboxItems.length}</strong><span>Inbox updates</span></div>
+          <div><strong>{healthySources}/{totalSources}</strong><span>Sources live</span></div>
+        </section>
+
+        <div className="dashboard-layout">
+          <section className="data-section upcoming-section">
+            <div className="section-heading">
+              <div><p className="eyebrow">Actionable work</p><h2>Upcoming</h2></div>
+              <button onClick={() => setActiveSection("Planner")} type="button">View all<ArrowRight size={15} /></button>
+            </div>
+            {scheduledItems.length ? (
+              <div className="academic-list">
+                {scheduledItems.slice(0, 6).map((item) => <AcademicItemRow item={item} key={item.id} />)}
               </div>
             ) : (
-              <div className="panel-empty"><Database size={23} /><h3>No academic items yet</h3><p>Run the IAM worker or capture something with Universal Command.</p></div>
+              <EmptyState
+                icon={CalendarDays}
+                title="No scheduled work"
+                copy={healthySources ? "Your connected sources have not reported a dated assignment yet." : "Scheduled work will appear after the worker completes its first sync."}
+                action={healthySources ? "Capture work" : "Open systems"}
+                onAction={() => healthySources ? openCommand() : setActiveSection("Systems")}
+              />
             )}
           </section>
 
-          <aside className="right-column">
-            <section className="panel deadlines-panel">
-              <div className="panel-heading compact"><div><span className="eyebrow">UPCOMING</span><h2>Deadlines</h2></div><span className="health-pill neutral">{activeItems.filter((item) => item.dueAt).length} known</span></div>
-              {activeItems.some((item) => item.dueAt) ? (
-                <div className="deadline-list">
-                  {activeItems.filter((item) => item.dueAt).slice(0, 4).map((item) => {
-                    const date = itemDate(item)!;
-                    return <article className="deadline-item" key={item.id}><div className="date-tile blue"><small>{new Intl.DateTimeFormat(undefined, { weekday: "short" }).format(date).toUpperCase()}</small><strong>{date.getDate()}</strong></div><div><h3>{item.title}</h3><p>{item.subject} · {item.source}</p></div></article>;
-                  })}
+          <aside className="dashboard-aside">
+            <section className="data-section inbox-section">
+              <div className="section-heading compact">
+                <div><p className="eyebrow">Not treated as deadlines</p><h2>School inbox</h2></div>
+                <span className="count-chip">{inboxItems.length}</span>
+              </div>
+              {inboxItems.length ? (
+                <div className="academic-list compact-list">
+                  {inboxItems.slice(0, 4).map((item) => <AcademicItemRow compact item={item} key={item.id} />)}
                 </div>
-              ) : <div className="micro-empty">No verified deadlines yet.</div>}
+              ) : <p className="section-empty-copy">No undated updates are waiting.</p>}
             </section>
 
-            <section className="panel sources-panel">
-              <div className="panel-heading compact"><div><span className="eyebrow">CONNECTORS</span><h2>Source health</h2></div><span className="health-pill">{healthySources} / {state?.sources.length || 4} live</span></div>
-              <div className="source-list">
-                {(state?.sources ?? []).map((source) => <div className="source-item" key={source.id}><SourceMark source={source} /><strong>{source.name}</strong><span>{relativeSourceDetail(source)}</span></div>)}
-                {!state?.sources.length ? <div className="micro-empty">Waiting for live source records.</div> : null}
+            <section className="data-section source-section">
+              <div className="section-heading compact">
+                <div><p className="eyebrow">Worker evidence</p><h2>Source health</h2></div>
+                <span className={`status-summary ${healthySources ? "live" : "idle"}`}>{healthySources}/{totalSources} live</span>
               </div>
-              <button className="reauth-button" onClick={() => setActiveSection("Systems")} type="button"><Settings2 size={16} /> Configure local worker</button>
+              <div className="source-list">
+                {(state?.sources ?? []).map((source) => (
+                  <div className="source-row" key={source.id}>
+                    <SourceMark source={source} />
+                    <div><strong>{source.name}</strong><span>{relativeSourceDetail(source)}</span></div>
+                    <span className={`status-chip ${sourceTone(source.status)}`}>{source.status}</span>
+                  </div>
+                ))}
+                {!state?.sources.length ? <p className="section-empty-copy">No worker heartbeat has arrived.</p> : null}
+              </div>
+              <button className="section-footer-action" onClick={() => setActiveSection("Systems")} type="button">
+                <Settings2 size={15} />Worker settings
+              </button>
             </section>
           </aside>
         </div>
@@ -386,10 +480,58 @@ export default function Home() {
   }
 
   function renderPlanner() {
+    const filterCounts: Record<PlannerFilter, number> = {
+      all: activeItems.length,
+      work: activeItems.filter((item) => item.type !== "announcement").length,
+      deadlines: scheduledItems.length,
+      announcements: activeItems.filter((item) => item.type === "announcement").length,
+    };
+    const hasFilters = plannerFilter !== "all" || plannerQuery.trim().length > 0;
     return (
       <section className="collection-page">
-        <div className="collection-heading"><div><p className="eyebrow">UNIFIED SCHOOL INBOX</p><h1>Planner</h1><p>WebUntis, Teams, both Moodles, and manual commands—sorted without sample entries.</p></div><button onClick={() => openCommand()} type="button"><Plus size={17} /> Capture work</button></div>
-        {activeItems.length ? <div className="work-list">{activeItems.map((item) => <article className="work-card" key={item.id}><span className={`work-type ${item.type}`}>{item.type.replace("_", " ")}</span><div><span className="eyebrow">{item.subject} · {item.source}</span><h2>{item.title}</h2><p>{item.description ?? `${item.evidence} evidence · ${item.confidence}% confidence`}</p></div><div className="work-date"><strong>{formatItemDate(item)}</strong><small>{item.status}</small></div></article>)}</div> : <EmptyState icon={ListTodo} title="The planner is empty" copy="That means Jarvis has not received any verified school item or manual command yet." action="Open worker setup" onAction={() => setActiveSection("Systems")} />}
+        <div className="page-heading">
+          <div><p className="eyebrow">Verified academic items</p><h1>Planner</h1><p>{activeItems.length} open item{activeItems.length === 1 ? "" : "s"} across connected sources.</p></div>
+          <button className="primary-action" onClick={() => openCommand()} type="button"><Plus size={17} />Capture work</button>
+        </div>
+
+        <div className="planner-toolbar">
+          <div className="segment-control" aria-label="Planner filter">
+            {plannerFilters.map((filter) => (
+              <button aria-pressed={plannerFilter === filter.id} key={filter.id} onClick={() => setPlannerFilter(filter.id)} type="button">
+                {filter.label}<span>{filterCounts[filter.id]}</span>
+              </button>
+            ))}
+          </div>
+          <label className="planner-search">
+            <Search size={16} />
+            <span className="sr-only">Search planner</span>
+            <input onChange={(event) => setPlannerQuery(event.target.value)} placeholder="Search title, subject, or source" type="search" value={plannerQuery} />
+          </label>
+        </div>
+
+        <section className="data-section planner-results">
+          <div className="section-heading compact">
+            <div><p className="eyebrow">{hasFilters ? "Filtered view" : "All open items"}</p><h2>{filteredPlannerItems.length} result{filteredPlannerItems.length === 1 ? "" : "s"}</h2></div>
+            {hasFilters ? <button onClick={() => { setPlannerFilter("all"); setPlannerQuery(""); }} type="button">Clear filters</button> : null}
+          </div>
+          {filteredPlannerItems.length ? (
+            <div className="academic-list">
+              {filteredPlannerItems.map((item) => <AcademicItemRow item={item} key={item.id} />)}
+            </div>
+          ) : (
+            <EmptyState
+              icon={ListTodo}
+              title={hasFilters ? "No matching items" : "The planner is empty"}
+              copy={hasFilters ? "Try another search or clear the active filter." : "Jarvis has not received verified school work or a manual command yet."}
+              action={hasFilters ? "Clear filters" : healthySources ? "Capture work" : "Open systems"}
+              onAction={() => {
+                if (hasFilters) { setPlannerFilter("all"); setPlannerQuery(""); }
+                else if (healthySources) openCommand();
+                else setActiveSection("Systems");
+              }}
+            />
+          )}
+        </section>
       </section>
     );
   }
@@ -397,8 +539,23 @@ export default function Home() {
   function renderSubjects() {
     return (
       <section className="collection-page">
-        <div className="collection-heading"><div><p className="eyebrow">KNOWLEDGE BY COURSE</p><h1>Subjects</h1><p>Subjects appear automatically from imported work and files.</p></div></div>
-        {subjectGroups.length ? <div className="canvas-grid">{subjectGroups.map(([subject, items]) => <article className="canvas-card subject-card" key={subject}><span className="canvas-icon"><GraduationCap size={20} /></span><span className="eyebrow">{items.length} ITEM{items.length === 1 ? "" : "S"}</span><h2>{subject}</h2><p>{items.filter((item) => item.status !== "done").length} open · {new Set(items.map((item) => item.source)).size} source{new Set(items.map((item) => item.source)).size === 1 ? "" : "s"}</p></article>)}</div> : <EmptyState icon={GraduationCap} title="No subjects indexed yet" copy="The first worker sync will build this list from actual school data." />}
+        <div className="page-heading"><div><p className="eyebrow">Courses from real records</p><h1>Subjects</h1><p>{subjectGroups.length} subject{subjectGroups.length === 1 ? "" : "s"} currently indexed.</p></div></div>
+        {subjectGroups.length ? (
+          <div className="entity-grid">
+            {subjectGroups.map(([subject, items]) => {
+              const openCount = items.filter((item) => item.status !== "done" && item.status !== "cancelled").length;
+              const sourceCount = new Set(items.map((item) => item.source)).size;
+              return (
+                <article className="entity-card" key={subject}>
+                  <span className="entity-icon"><GraduationCap size={19} /></span>
+                  <p className="eyebrow">{openCount} open / {sourceCount} source{sourceCount === 1 ? "" : "s"}</p>
+                  <h2>{subject}</h2>
+                  <p>{items.length} verified record{items.length === 1 ? "" : "s"}</p>
+                </article>
+              );
+            })}
+          </div>
+        ) : <EmptyState icon={GraduationCap} title="No subjects indexed" copy="Subjects will be created from imported school records, never from placeholders." />}
       </section>
     );
   }
@@ -407,8 +564,20 @@ export default function Home() {
     const projects = state?.projects ?? [];
     return (
       <section className="collection-page">
-        <div className="collection-heading"><div><p className="eyebrow">IDEAS → ACTION</p><h1>Project canvases</h1><p>Brainstorms captured in Universal Command become persistent canvases.</p></div><button onClick={() => openCommand("What if I built ")} type="button"><Plus size={17} /> New idea</button></div>
-        {projects.length ? <div className="canvas-grid">{projects.map((project) => <article className="canvas-card" key={project.id}><span className="canvas-icon"><Lightbulb size={20} /></span><span className="eyebrow">{project.status.toUpperCase()} · {project.subject.toUpperCase()}</span><h2>{project.title}</h2><p>{project.brief}</p><div className="canvas-footer"><span>Stored in Jarvis</span><button type="button">Open canvas <ArrowRight size={14} /></button></div></article>)}</div> : <EmptyState icon={Lightbulb} title="No project canvases yet" copy="Describe a hypothetical project naturally; Jarvis will recognize it and create the canvas." action="Brainstorm an idea" onAction={() => openCommand(commandExamples[1])} />}
+        <div className="page-heading"><div><p className="eyebrow">Active investigations</p><h1>Projects</h1><p>{projects.length} saved project canvas{projects.length === 1 ? "" : "es"}.</p></div><button className="primary-action" onClick={() => openCommand("What if I built ")} type="button"><Plus size={17} />New idea</button></div>
+        {projects.length ? (
+          <div className="entity-grid">
+            {projects.map((project) => (
+              <article className="entity-card project-card" key={project.id}>
+                <span className="entity-icon amber"><Lightbulb size={19} /></span>
+                <p className="eyebrow">{project.status} / {project.subject}</p>
+                <h2>{project.title}</h2>
+                <p>{project.brief}</p>
+                <span className="entity-status">Stored in Jarvis</span>
+              </article>
+            ))}
+          </div>
+        ) : <EmptyState icon={Lightbulb} title="No projects yet" copy="Capture a project idea and Jarvis will store the first canvas." action="Start an idea" onAction={() => openCommand(commandExamples[1])} />}
       </section>
     );
   }
@@ -417,8 +586,19 @@ export default function Home() {
     const notes = state?.notes ?? [];
     return (
       <section className="collection-page">
-        <div className="collection-heading"><div><p className="eyebrow">PERSONAL KNOWLEDGE</p><h1>Knowledge notes</h1><p>Teacher remarks and facts captured through Universal Command.</p></div><button onClick={() => openCommand("Remember this: ")} type="button"><Plus size={17} /> New note</button></div>
-        {notes.length ? <div className="canvas-grid">{notes.map((note) => <article className="canvas-card note-card" key={note.id}><span className="canvas-icon"><NotebookPen size={20} /></span><span className="eyebrow">{note.subject.toUpperCase()}</span><h2>{note.title}</h2><p>{note.body}</p></article>)}</div> : <EmptyState icon={NotebookPen} title="No knowledge notes yet" copy="Say “Remember this…” and Jarvis will save the note under the inferred subject." />}
+        <div className="page-heading"><div><p className="eyebrow">Captured context</p><h1>Knowledge</h1><p>{notes.length} saved note{notes.length === 1 ? "" : "s"}.</p></div><button className="primary-action" onClick={() => openCommand("Remember this: ")} type="button"><Plus size={17} />New note</button></div>
+        {notes.length ? (
+          <div className="entity-grid">
+            {notes.map((note) => (
+              <article className="entity-card note-card" key={note.id}>
+                <span className="entity-icon green"><NotebookPen size={19} /></span>
+                <p className="eyebrow">{note.subject}</p>
+                <h2>{note.title}</h2>
+                <p>{note.body}</p>
+              </article>
+            ))}
+          </div>
+        ) : <EmptyState icon={NotebookPen} title="No notes yet" copy="Facts and teacher remarks you capture will appear here." />}
       </section>
     );
   }
@@ -426,54 +606,99 @@ export default function Home() {
   function renderSystems() {
     const sources = state?.sources ?? [];
     const providers = state?.providers ?? [];
+    const workerLive = sources.some((source) => source.status === "healthy");
     return (
       <section className="collection-page systems-page">
-        <div className="collection-heading"><div><p className="eyebrow">LOCAL SECRETS · CLOUD INTELLIGENCE</p><h1>Systems</h1><p>Pair your worker, inspect source health, and see which AI routes are actually configured.</p></div><button className="refresh-button" onClick={() => void loadState()} type="button"><RefreshCw size={16} className={stateLoading ? "spin" : ""} /> Refresh</button></div>
+        <div className="page-heading">
+          <div><p className="eyebrow">Private worker and integrations</p><h1>Systems</h1><p>{workerLive ? `Worker online. ${formatFreshness(state?.generatedAt)}` : "No healthy worker source is reporting."}</p></div>
+          <button className="quiet-action" onClick={() => void loadState()} type="button"><RefreshCw className={stateLoading ? "spin" : ""} size={16} />Refresh</button>
+        </div>
+
+        <section className={`worker-banner ${workerLive ? "live" : "waiting"}`}>
+          <span>{workerLive ? <ShieldCheck size={21} /> : <Database size={21} />}</span>
+          <div><p className="eyebrow">Local worker</p><h2>{workerLive ? "School data is reporting securely." : "Connect the HP worker to begin."}</h2><p>{workerLive ? `${healthySources} source${healthySources === 1 ? "" : "s"} passed the latest health check.` : "Credentials stay in Windows DPAPI and are used only on allowlisted identity pages."}</p></div>
+        </section>
 
         <div className="systems-grid">
-          <article className="system-card credential-card">
-            <span className="system-icon green"><LockKeyhole size={21} /></span><span className="eyebrow">IAM CREDENTIAL BOUNDARY</span><h2>Your password stays on your worker</h2>
-            <p>Jarvis stores the IAM password in Windows DPAPI on the HP or in a Docker secret file on your NAS. It is entered only on approved IAM/Microsoft identity hosts and is never sent to an AI model or this dashboard.</p>
-            <div className="security-rule"><ShieldCheck size={16} /><span>Automatic password login is opt-in. MFA pauses for you if IAM requests it.</span></div>
-          </article>
+          <section className="data-section">
+            <div className="section-heading compact"><div><p className="eyebrow">School sources</p><h2>Browser worker</h2></div><span className={`status-summary ${healthySources ? "live" : "idle"}`}>{healthySources}/{Math.max(sources.length, 4)} live</span></div>
+            <div className="system-list">
+              {sources.map((source) => (
+                <div className="system-row" key={source.id}>
+                  <SourceMark source={source} />
+                  <div><strong>{source.name}</strong><span>{relativeSourceDetail(source)}</span></div>
+                  <span className={`status-chip ${sourceTone(source.status)}`}>{source.status}</span>
+                </div>
+              ))}
+              {!sources.length ? <p className="section-empty-copy">No source heartbeat has reached Jarvis.</p> : null}
+            </div>
+          </section>
 
-          <article className="system-card pair-card">
-            <span className="system-icon purple"><KeyRound size={21} /></span><span className="eyebrow">WORKER PAIRING</span><h2>Connect the HP or Synology</h2>
-            <p>Create a one-time token, save it locally as the worker secret, then run the browser worker. The token can publish normalized items; it cannot read your IAM password.</p>
-            {pairToken ? <div className="token-box"><code>{pairToken}</code><button aria-label="Copy worker token" onClick={() => void copyPairToken()} type="button">{copied ? <Check size={16} /> : <ClipboardCopy size={16} />}</button></div> : <button className="primary-system-action" disabled={pairPending} onClick={() => void createPairToken()} type="button">{pairPending ? <LoaderCircle className="spin" size={16} /> : <KeyRound size={16} />}{pairPending ? "Creating…" : "Create one-time worker token"}</button>}
-            {pairToken ? <p className="token-warning">Shown once. Save it with <code>.\scripts\jarvis.ps1 token</code>; do not paste it into chat or GitHub.</p> : null}
-            {pairError ? <p className="command-error">{pairError}</p> : null}
-          </article>
+          <section className="data-section">
+            <div className="section-heading compact"><div><p className="eyebrow">AI routing</p><h2>Providers</h2></div><span className="count-chip">fallbacks</span></div>
+            <div className="system-list">
+              {providers.map((provider) => (
+                <div className="system-row" key={provider.id}>
+                  <span className={`provider-mark ${provider.configured ? "configured" : ""}`}><Bot size={14} /></span>
+                  <div><strong>{provider.name}</strong><span>{provider.role}</span></div>
+                  <span className={`status-chip ${provider.configured ? "live" : "idle"}`}>{provider.configured ? "ready" : "not set"}</span>
+                </div>
+              ))}
+              {!providers.length ? <p className="section-empty-copy">No provider status has been published.</p> : null}
+            </div>
+          </section>
         </div>
 
-        <div className="systems-grid lower">
-          <section className="panel systems-panel"><div className="panel-heading compact"><div><span className="eyebrow">SCHOOL SOURCES</span><h2>Browser worker status</h2></div><span className="health-pill">{sources.filter((source) => source.status === "healthy").length} / {sources.length || 4} live</span></div><div className="system-status-list">{sources.map((source) => <div className="system-status" key={source.id}><SourceMark source={source} /><div><strong>{source.name}</strong><small>{relativeSourceDetail(source)}</small></div><span className={`status-chip ${sourceTone(source.status)}`}>{source.status}</span></div>)}{!sources.length ? <div className="micro-empty">No worker heartbeat has reached D1 yet.</div> : null}</div></section>
-          <section className="panel systems-panel"><div className="panel-heading compact"><div><span className="eyebrow">AI ROUTER</span><h2>Configured providers</h2></div><span className="health-pill neutral">fallback chain</span></div><div className="system-status-list">{providers.map((provider) => <div className="system-status provider-status" key={provider.id}><span className={`provider-dot ${provider.configured ? "configured" : ""}`}><Bot size={14} /></span><div><strong>{provider.name}</strong><small>{provider.role}</small></div><span className={`status-chip ${provider.configured ? "live" : "idle"}`}>{provider.configured ? "ready" : "not set"}</span></div>)}{!providers.length ? <div className="micro-empty">Provider status will appear when D1 is live.</div> : null}</div></section>
+        <div className="systems-grid setup-grid">
+          <section className="data-section pairing-section">
+            <div className="section-heading compact"><div><p className="eyebrow">Worker pairing</p><h2>{workerLive ? "Replace worker access" : "Connect this worker"}</h2></div><KeyRound size={18} /></div>
+            <p>A pairing token may publish normalized school records. It cannot read the IAM password stored on this PC.</p>
+            {pairToken ? (
+              <div className="token-box">
+                <code>{pairToken}</code>
+                <button aria-label="Copy worker token" onClick={() => void copyPairToken()} title="Copy token" type="button">{copied ? <Check size={16} /> : <ClipboardCopy size={16} />}</button>
+              </div>
+            ) : (
+              <button className={workerLive ? "secondary-action" : "primary-action"} disabled={pairPending} onClick={() => void createPairToken()} type="button">
+                {pairPending ? <LoaderCircle className="spin" size={16} /> : <KeyRound size={16} />}
+                {pairPending ? "Creating..." : workerLive ? "Create replacement token" : "Create one-time token"}
+              </button>
+            )}
+            {pairToken ? <p className="token-warning">Shown once. Store it with <code>.\scripts\jarvis.ps1 token</code>.</p> : null}
+            {pairError ? <p className="form-error" role="alert">{pairError}</p> : null}
+          </section>
+
+          <section className="data-section credential-section">
+            <div className="section-heading compact"><div><p className="eyebrow">Credential boundary</p><h2>IAM stays local</h2></div><LockKeyhole size={18} /></div>
+            <p>The IAM password is encrypted for this Windows account. It is never sent to the dashboard, an AI provider, GitHub, or Universal Command.</p>
+            <div className="security-note"><ShieldCheck size={16} /><span>Password entry is limited to approved IAM and Microsoft identity hosts. MFA still pauses for you.</span></div>
+          </section>
         </div>
 
-        <section className="panel systems-panel agent-queue-panel">
-          <div className="panel-heading compact">
-            <div><span className="eyebrow">ASYNCHRONOUS WORK</span><h2>Agent queue</h2></div>
-            <span className="health-pill neutral">{state?.agentJobs.length ?? 0} recent</span>
-          </div>
+        <section className="data-section agent-section">
+          <div className="section-heading compact"><div><p className="eyebrow">Asynchronous work</p><h2>Agent queue</h2></div><span className="count-chip">{state?.agentJobs.length ?? 0}</span></div>
           {state?.agentJobs.length ? (
-            <div className="agent-job-list">
+            <div className="agent-list">
               {state.agentJobs.map((job) => (
-                <article className="agent-job" key={job.id}>
+                <article className="agent-row" key={job.id}>
                   <span className={`job-state ${job.status}`}>{job.status}</span>
-                  <div>
-                    <strong>{job.kind.replaceAll("_", " ")}</strong>
-                    <small>{job.provider ? `${job.provider}${job.model ? ` · ${job.model}` : ""}` : "Waiting for the HP/NAS worker"}</small>
-                    {job.result ? <p>{job.result}</p> : null}
-                    {job.error ? <p className="job-error">{job.error}</p> : null}
-                  </div>
+                  <div><strong>{job.kind.replaceAll("_", " ")}</strong><span>{job.provider ? `${job.provider}${job.model ? ` / ${job.model}` : ""}` : "Waiting for the local worker"}</span>{job.result ? <p>{job.result}</p> : null}{job.error ? <p className="form-error">{job.error}</p> : null}</div>
                 </article>
               ))}
             </div>
-          ) : <div className="micro-empty">Questions and project research jobs will appear here after Universal Command queues them.</div>}
+          ) : <p className="section-empty-copy">No queued or recent agent work.</p>}
         </section>
 
-        <article className="system-card command-line-card"><span className="eyebrow">LOCAL SETUP</span><h2>Run these steps from the repository root</h2><div className="setup-steps"><div><span>1</span><code>.\scripts\setup-windows.ps1</code></div><div><span>2</span><code>.\scripts\jarvis.ps1 doctor</code></div><div><span>3</span><code>.\scripts\jarvis.ps1 auth webuntis -Headed</code></div><div><span>4</span><code>.\scripts\jarvis.ps1 health all</code></div><div><span>5</span><code>.\scripts\jarvis.ps1 install</code></div></div><p>Setup uses native protected prompts for IAM credentials and the worker token. Never type either into Universal Command.</p></article>
+        <section className="data-section setup-section">
+          <div className="section-heading compact"><div><p className="eyebrow">Local controls</p><h2>Worker commands</h2></div><Database size={18} /></div>
+          <div className="setup-steps">
+            <div><span>1</span><strong>Check installation</strong><code>.\scripts\jarvis.ps1 doctor</code></div>
+            <div><span>2</span><strong>Open login flows</strong><code>.\scripts\jarvis.ps1 auth all -Headed</code></div>
+            <div><span>3</span><strong>Read all sources now</strong><code>.\scripts\jarvis.ps1 sync all</code></div>
+            <div><span>4</span><strong>Keep the worker running</strong><code>.\scripts\jarvis.ps1 install</code></div>
+          </div>
+          <p className="setup-warning"><AlertTriangle size={15} />Enter IAM credentials only in the protected Windows prompt or approved identity page.</p>
+        </section>
       </section>
     );
   }
@@ -488,58 +713,69 @@ export default function Home() {
   return (
     <main className="app-shell">
       <aside className="sidebar" aria-label="Main navigation">
-        <div className="brand-block"><div className="brand-mark" aria-hidden="true">J</div><div><p className="brand-name">JARVIS</p><p className="brand-edition">ACADEMIC OS</p></div></div>
-        <nav className="nav-list">{navItems.map(({ label, icon: Icon }) => <button className={`nav-item ${activeSection === label ? "active" : ""}`} key={label} onClick={() => setActiveSection(label)} type="button"><Icon size={18} strokeWidth={1.8} /><span>{label}</span>{label === "Systems" && healthySources === 0 ? <span className="nav-badge">!</span> : null}</button>)}</nav>
-        <div className="sidebar-bottom"><div className={`sync-card ${healthySources ? "" : "waiting"}`}><div className="sync-row">{healthySources ? <ShieldCheck size={17} /> : <Database size={17} />}<span>{healthySources ? "Live data connected" : "Awaiting worker"}</span></div><p>{healthySources} healthy source{healthySources === 1 ? "" : "s"}</p></div><button className="profile-card" onClick={() => setActiveSection("Systems")} type="button"><span className="avatar">DF</span><span><strong>Darius</strong><small>Private workspace</small></span><Settings2 size={16} /></button></div>
+        <div className="brand-block"><span className="brand-mark" aria-hidden="true">J</span><div><strong>Jarvis</strong><span>Academic OS</span></div></div>
+        <nav className="nav-list">
+          {navItems.map(({ label, icon: Icon }) => (
+            <button className={`nav-item ${activeSection === label ? "active" : ""}`} key={label} onClick={() => setActiveSection(label)} type="button">
+              <Icon size={18} strokeWidth={1.8} /><span>{label}</span>
+              {label === "Systems" && healthySources === 0 ? <span className="nav-alert" aria-label="Worker needs attention">!</span> : null}
+            </button>
+          ))}
+        </nav>
+        <div className="sidebar-bottom">
+          <div className={`sidebar-status ${healthySources ? "live" : "waiting"}`}><span>{healthySources ? <ShieldCheck size={16} /> : <Database size={16} />}</span><div><strong>{healthySources ? "Worker online" : "Worker waiting"}</strong><small>{healthySources}/{totalSources} sources live</small></div></div>
+          <button className="profile-button" onClick={() => setActiveSection("Systems")} type="button"><span className="avatar">DF</span><span><strong>Darius</strong><small>Private workspace</small></span><Settings2 size={16} /></button>
+        </div>
       </aside>
 
       <section className="workspace">
-        <header className="topbar"><div className="mobile-brand"><span className="brand-mark">J</span><strong>JARVIS</strong></div><button className="search-box" onClick={() => openCommand()} type="button"><Search size={18} /><span>Tell Jarvis anything…</span><kbd><Command size={12} /> K</kbd></button><span className="phase-badge live-phase">PHASE 1 · REAL DATA</span><div className="top-actions"><button className="icon-button" aria-label="Systems" onClick={() => setActiveSection("Systems")} type="button"><CircleHelp size={19} /></button><button className="capture-button" onClick={() => openCommand()} type="button"><Sparkles size={17} /><span>Universal command</span></button></div></header>
+        <header className="topbar">
+          <div className="mobile-brand"><span className="brand-mark">J</span><strong>Jarvis</strong></div>
+          <button aria-label="Open Universal Command" className="command-trigger" onClick={() => openCommand()} title="Open Universal Command" type="button"><Search size={17} /><span>Search or capture anything</span></button>
+          <span className={`live-badge ${healthySources ? "online" : "offline"}`}><i />{healthySources}/{totalSources} sources live</span>
+          <div className="top-actions">
+            <button className="icon-button" aria-label="Refresh school data" onClick={() => void loadState()} title="Refresh school data" type="button"><RefreshCw className={stateLoading ? "spin" : ""} size={18} /></button>
+            <button aria-label="Capture with Universal Command" className="capture-button" onClick={() => openCommand()} title="Capture with Universal Command" type="button"><Sparkles size={16} /><span>Capture</span></button>
+          </div>
+        </header>
         <div className="content-wrap">{sectionContent}</div>
       </section>
 
       {commandOpen ? (
         <div className="command-overlay" onMouseDown={(event) => { if (event.currentTarget === event.target) setCommandOpen(false); }}>
-          <section aria-labelledby="command-title" aria-modal="true" className="command-dialog compact-command" role="dialog">
+          <section aria-labelledby="command-title" aria-modal="true" className="command-dialog" role="dialog">
             <div className="command-heading">
-              <span className="command-mark"><Sparkles size={19} /></span>
-              <div><p className="eyebrow">UNIVERSAL COMMAND</p><h2 id="command-title">Say what happened—or what you want.</h2></div>
-              <button aria-label="Close Universal Command" onClick={() => setCommandOpen(false)} type="button"><X size={18} /></button>
+              <span className="command-mark"><Sparkles size={18} /></span>
+              <div><p className="eyebrow">Universal Command</p><h2 id="command-title">What should Jarvis capture?</h2></div>
+              <button aria-label="Close Universal Command" onClick={() => setCommandOpen(false)} title="Close" type="button"><X size={18} /></button>
             </div>
             {!commandResult ? (
               <form onSubmit={runCommand}>
                 <label className="command-input-wrap">
                   <span className="sr-only">Natural-language command</span>
-                  <textarea autoFocus maxLength={2000} onChange={(event) => setCommandText(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }} placeholder="Algebra book exercises 4–8 for Friday" rows={3} value={commandText} />
-                  <span className="command-hint">Jarvis infers whether this is homework, a study session, a note, a question, or a project canvas.</span>
+                  <textarea autoFocus maxLength={2000} onChange={(event) => setCommandText(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }} placeholder="Algebra exercises 4-8 for Friday" rows={4} value={commandText} />
                 </label>
-                {commandError ? <p className="command-error">{commandError}</p> : null}
+                {commandError ? <p className="form-error" role="alert">{commandError}</p> : null}
                 <div className="command-submit-row">
-                  <span><Command size={12} /> K to open · Enter to run</span>
-                  <button disabled={!commandText.trim() || commandPending} type="submit">{commandPending ? <LoaderCircle className="spin" size={16} /> : <CornerDownLeft size={16} />}{commandPending ? "Understanding…" : "Run command"}</button>
+                  <span>Homework, notes, questions, study, or projects</span>
+                  <button disabled={!commandText.trim() || commandPending} type="submit">{commandPending ? <LoaderCircle className="spin" size={16} /> : <ArrowRight size={16} />}{commandPending ? "Understanding..." : "Run command"}</button>
                 </div>
               </form>
             ) : (
-              <div className="command-result">
-                <span className={`result-check ${commandResult.stored ? "" : "warning"}`}>{commandResult.stored ? <Check size={21} /> : <AlertTriangle size={21} />}</span>
-                <div>
-                  <span className="eyebrow">{commandResult.stored ? "SAVED" : "UNDERSTOOD · NOT SAVED"}</span>
-                  <h3>{commandResult.response}</h3>
-                  <p>{commandResult.subject ?? "General"}{commandResult.dueLabel ? ` · ${commandResult.dueLabel}` : ""}{` · ${Math.round(commandResult.confidence * 100)}% confidence`}</p>
-                  <small>Routed by {providerNames[commandResult.provider]}{commandResult.queuedJobId ? " · worker job queued" : ""}{!commandResult.stored ? " · database unavailable" : ""}</small>
-                </div>
-                <div className="result-actions">
-                  <button className="secondary" onClick={() => { setCommandText(""); setCommandResult(null); setCommandError(""); }} type="button">New command</button>
-                  {commandResult.stored && commandResult.action !== "ask_jarvis" ? <button onClick={openCommandResult} type="button">Open result <ArrowRight size={15} /></button> : null}
-                </div>
+              <div className="command-result" aria-live="polite">
+                <span className={`result-symbol ${commandResult.stored ? "saved" : "warning"}`}>{commandResult.stored ? <Check size={20} /> : <AlertTriangle size={20} />}</span>
+                <div><p className="eyebrow">{commandResult.stored ? "Saved" : "Understood, not saved"}</p><h3>{commandResult.response}</h3><p>{commandResult.subject ?? "General"}{commandResult.dueLabel ? ` / ${commandResult.dueLabel}` : ""} / {Math.round(commandResult.confidence * 100)}% confidence</p><small>Routed by {providerNames[commandResult.provider]}{commandResult.queuedJobId ? " / worker job queued" : ""}{!commandResult.stored ? " / database unavailable" : ""}</small></div>
+                <div className="result-actions"><button className="secondary-action" onClick={() => { setCommandText(""); setCommandResult(null); setCommandError(""); }} type="button">New command</button>{commandResult.stored && commandResult.action !== "ask_jarvis" ? <button className="primary-action" onClick={openCommandResult} type="button">Open result<ArrowRight size={15} /></button> : null}</div>
               </div>
             )}
-            {!commandResult ? <div className="command-examples"><span>Examples</span>{commandExamples.map((example) => <button key={example} onClick={() => setCommandText(example)} type="button">{example}</button>)}</div> : null}
+            {!commandResult ? <div className="command-examples"><span>Try an example</span>{commandExamples.map((example) => <button key={example} onClick={() => setCommandText(example)} type="button">{example}</button>)}</div> : null}
           </section>
         </div>
       ) : null}
 
-      <nav className="mobile-nav" aria-label="Mobile navigation">{navItems.slice(0, 5).map(({ label, icon: Icon }) => <button className={activeSection === label ? "active" : ""} key={label} onClick={() => setActiveSection(label)} type="button"><Icon size={18} /><span>{label}</span></button>)}</nav>
+      <nav className="mobile-nav" aria-label="Mobile navigation">
+        {navItems.map(({ label, icon: Icon }) => <button className={activeSection === label ? "active" : ""} key={label} onClick={() => setActiveSection(label)} type="button"><Icon size={18} /><span>{label}</span></button>)}
+      </nav>
     </main>
   );
 }
