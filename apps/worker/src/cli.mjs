@@ -11,7 +11,7 @@ import { ensureAuthenticated } from "./authentication.mjs";
 import { credentialStatus, loadIamCredentials } from "./credentials.mjs";
 import { inspectSession, navigateToSource } from "./inspection.mjs";
 import { appendEvent, writeJson } from "./io.mjs";
-import { dashboardUrl, readWorkerToken, publishSyncResult } from "./publish.mjs";
+import { dashboardUrl, readSitesBypassToken, readWorkerToken, publishSyncResult } from "./publish.mjs";
 import { providerStatus, runRoutedTask } from "./agents/providers.mjs";
 import { triageNormalizedItems } from "./agents/triage.mjs";
 import { drainAgentJobs } from "./agents/jobs.mjs";
@@ -77,10 +77,11 @@ async function playwrightStatus() {
   }
 }
 
-async function reachabilityCheck(name, url) {
+async function reachabilityCheck(name, url, headers = {}) {
   try {
     const response = await fetch(url, {
       method: "HEAD",
+      headers,
       redirect: "follow",
       signal: AbortSignal.timeout(10_000),
     });
@@ -103,7 +104,7 @@ async function doctor({ network = true, json = false } = {}) {
   const workerPackage = path.join(repositoryRoot, "apps", "worker", "package.json");
   const dependencyPackage = path.join(repositoryRoot, "apps", "worker", "node_modules", "playwright", "package.json");
   const configFile = process.env.JARVIS_CONFIG_FILE;
-  const [credentials, providers, token, playwright, stateDirectory, profileDirectory, schoolFilesDirectory] = await Promise.all([
+  const [credentials, providers, token, sitesBypass, playwright, stateDirectory, profileDirectory, schoolFilesDirectory] = await Promise.all([
     credentialStatus().catch((error) => ({
       enabled: false,
       storage: null,
@@ -111,6 +112,7 @@ async function doctor({ network = true, json = false } = {}) {
     })),
     providerStatus().catch((error) => ({ error: error instanceof Error ? error.message : String(error) })),
     readWorkerToken().catch(() => null),
+    readSitesBypassToken().catch(() => null),
     playwrightStatus(),
     directoryStatus(workerConfig.stateDirectory),
     directoryStatus(workerConfig.profileDirectory),
@@ -131,6 +133,7 @@ async function doctor({ network = true, json = false } = {}) {
     check("Playwright Chromium", playwright.ok, playwright.detail),
     check("dashboard url", Boolean(dashboard && !String(dashboard).includes("must use HTTPS")), dashboard ?? "Set JARVIS_DASHBOARD_URL."),
     check("worker token", Boolean(token), token ? "configured" : "Set JARVIS_WORKER_TOKEN_FILE or JARVIS_WORKER_TOKEN."),
+    check("private Sites API bypass", !String(dashboard).includes(".chatgpt.site") || Boolean(sitesBypass), sitesBypass ? "configured" : "Run .\\scripts\\jarvis.ps1 sites-token."),
     check("password login opt-in", process.env.JARVIS_ALLOW_PASSWORD_LOGIN === "true", "Run setup or set JARVIS_ALLOW_PASSWORD_LOGIN=true."),
     check("iam credentials", credentials.enabled, credentials.error ?? (credentials.storage ? `configured via ${credentials.storage}` : "Run .\\scripts\\jarvis.ps1 credentials.")),
     check("state directory", stateDirectory.ok, stateDirectory.detail),
@@ -141,7 +144,7 @@ async function doctor({ network = true, json = false } = {}) {
 
   if (network) {
     const probes = await Promise.all([
-      dashboard ? reachabilityCheck("dashboard", dashboard) : Promise.resolve(check("dashboard reachability", false, "Dashboard URL is not configured.")),
+      dashboard ? reachabilityCheck("dashboard", dashboard, sitesBypass ? { "OAI-Sites-Authorization": `Bearer ${sitesBypass}` } : {}) : Promise.resolve(check("dashboard reachability", false, "Dashboard URL is not configured.")),
       ...sourceKeys.map((key) => reachabilityCheck(sources[key].label, sources[key].url)),
     ]);
     report.push(...probes);
@@ -260,7 +263,7 @@ async function synchronize(source) {
       publication: publication.state,
       triage: triage ? (triage.state ?? "completed") : "skipped",
     });
-    return result;
+    return { ...result, publication };
   } catch (error) {
     const failure = {
       source: source.key,

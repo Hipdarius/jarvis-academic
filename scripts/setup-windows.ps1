@@ -32,6 +32,7 @@ if (-not $npm -or -not $npx) {
 $dataRoot = Get-JarvisDataDirectory -Override $DataDirectory
 $configFile = Join-Path $dataRoot "worker.env"
 $tokenFile = Join-Path $dataRoot "worker_token"
+$sitesBypassTokenFile = Join-Path $dataRoot "sites_bypass_token"
 $credentialFile = Join-Path $dataRoot "iam-credential.dpapi.json"
 $profileDirectory = Join-Path $dataRoot "browser-profile"
 $stateDirectory = Join-Path $dataRoot "work"
@@ -55,6 +56,7 @@ foreach ($directory in @($dataRoot, $profileDirectory, $stateDirectory, $schoolF
 $environmentValues = [ordered]@{
   JARVIS_DASHBOARD_URL = ConvertTo-JarvisEnvValue $DashboardUrl
   JARVIS_WORKER_TOKEN_FILE = ConvertTo-JarvisEnvValue $tokenFile
+  JARVIS_SITES_BYPASS_TOKEN_FILE = ConvertTo-JarvisEnvValue $sitesBypassTokenFile
   JARVIS_IAM_DPAPI_FILE = ConvertTo-JarvisEnvValue $credentialFile
   JARVIS_ALLOW_PASSWORD_LOGIN = "true"
   JARVIS_BROWSER_PROFILE_DIR = ConvertTo-JarvisEnvValue $profileDirectory
@@ -90,6 +92,8 @@ if (-not $SkipIam) {
 if (-not $SkipToken) {
   & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot "setup-worker-token.ps1") -TargetFile $tokenFile
   if ($LASTEXITCODE -ne 0) { throw "Worker-token setup did not complete." }
+  & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot "setup-sites-bypass-token.ps1") -TargetFile $sitesBypassTokenFile
+  if ($LASTEXITCODE -ne 0) { throw "Sites bypass-token setup did not complete." }
 }
 
 $env:JARVIS_CONFIG_FILE = $configFile

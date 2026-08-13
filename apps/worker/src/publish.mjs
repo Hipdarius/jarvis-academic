@@ -6,6 +6,24 @@ export async function readWorkerToken() {
   return process.env.JARVIS_WORKER_TOKEN?.trim() || null;
 }
 
+export async function readSitesBypassToken() {
+  const file = process.env.JARVIS_SITES_BYPASS_TOKEN_FILE;
+  if (file) return (await fs.readFile(file, "utf8")).replace(/\r?\n$/, "");
+  return process.env.JARVIS_SITES_BYPASS_TOKEN?.trim() || null;
+}
+
+export async function workerApiHeaders(workerToken) {
+  const headers = {
+    Authorization: `Bearer ${workerToken}`,
+    "Content-Type": "application/json",
+  };
+  const sitesBypassToken = await readSitesBypassToken();
+  if (sitesBypassToken) {
+    headers["OAI-Sites-Authorization"] = `Bearer ${sitesBypassToken}`;
+  }
+  return headers;
+}
+
 export function dashboardUrl() {
   const value = process.env.JARVIS_DASHBOARD_URL?.trim();
   if (!value) return null;
@@ -33,10 +51,7 @@ export async function publishSyncResult(source, result, startedAt) {
   const items = Array.isArray(result.items) ? result.items : [];
   const response = await fetch(`${baseUrl}/api/worker/sync`, {
     method: "POST",
-    headers: {
-      Authorization: `Bearer ${token}`,
-      "Content-Type": "application/json",
-    },
+    headers: await workerApiHeaders(token),
     body: JSON.stringify({
       source: source.key,
       health: result.health ?? { state: result.state ?? "error", checkedAt: new Date().toISOString() },

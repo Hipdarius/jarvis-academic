@@ -39,6 +39,7 @@ test("root command help keeps secrets out of command-line examples", {
     "help",
   ]);
   assert.match(stdout, /jarvis\.ps1 doctor/);
+  assert.match(stdout, /jarvis\.ps1 sites-token/);
   assert.match(stdout, /native DPAPI credential prompt/);
   assert.doesNotMatch(stdout, /JARVIS_IAM_PASSWORD=/);
   assert.doesNotMatch(stdout, /JARVIS_WORKER_TOKEN=/);
@@ -61,9 +62,11 @@ test("Windows bootstrap persists only non-secret settings", {
     ]);
     const configuration = await fs.readFile(path.join(dataDirectory, "worker.env"), "utf8");
     assert.match(configuration, /JARVIS_WORKER_TOKEN_FILE=/);
+    assert.match(configuration, /JARVIS_SITES_BYPASS_TOKEN_FILE=/);
     assert.match(configuration, /JARVIS_IAM_DPAPI_FILE=/);
     assert.match(configuration, /JARVIS_ALLOW_PASSWORD_LOGIN=true/);
     assert.doesNotMatch(configuration, /JARVIS_WORKER_TOKEN=/);
+    assert.doesNotMatch(configuration, /JARVIS_SITES_BYPASS_TOKEN=/);
     assert.doesNotMatch(configuration, /JARVIS_IAM_PASSWORD=/);
     assert.doesNotMatch(configuration, /jrv_[A-Za-z0-9_-]+/);
 

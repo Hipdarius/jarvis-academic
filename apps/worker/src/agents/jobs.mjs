@@ -1,9 +1,5 @@
-import { dashboardUrl, readWorkerToken } from "../publish.mjs";
+import { dashboardUrl, readWorkerToken, workerApiHeaders } from "../publish.mjs";
 import { runRoutedTask } from "./providers.mjs";
-
-function bearer(token) {
-  return { Authorization: `Bearer ${token}`, "Content-Type": "application/json" };
-}
 
 async function claimJob() {
   const baseUrl = dashboardUrl();
@@ -11,7 +7,7 @@ async function claimJob() {
   if (!baseUrl || !token) return { state: "not_configured", job: null };
   const response = await fetch(`${baseUrl}/api/worker/jobs/claim`, {
     method: "POST",
-    headers: bearer(token),
+    headers: await workerApiHeaders(token),
     signal: AbortSignal.timeout(30_000),
   });
   if (!response.ok) throw new Error(`Agent job claim failed with HTTP ${response.status}.`);
@@ -21,7 +17,7 @@ async function claimJob() {
 async function finishJob(baseUrl, token, id, result) {
   const response = await fetch(`${baseUrl}/api/worker/jobs/${encodeURIComponent(id)}/result`, {
     method: "POST",
-    headers: bearer(token),
+    headers: await workerApiHeaders(token),
     body: JSON.stringify(result),
     signal: AbortSignal.timeout(30_000),
   });

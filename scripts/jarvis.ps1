@@ -20,6 +20,7 @@ Academic Jarvis commands (run from any folder)
   .\scripts\jarvis.ps1 doctor [-Offline] [-Json]
   .\scripts\jarvis.ps1 credentials
   .\scripts\jarvis.ps1 token
+  .\scripts\jarvis.ps1 sites-token
   .\scripts\jarvis.ps1 login [webuntis|academy|edumoodle|teams]
   .\scripts\jarvis.ps1 auth [source|all] [-Headed]
   .\scripts\jarvis.ps1 health [source|all]
@@ -51,6 +52,7 @@ switch ($commandName) {
     exit $LASTEXITCODE
   }
   "token" { & (Join-Path $PSScriptRoot "setup-worker-token.ps1"); if (-not $?) { exit 1 }; exit 0 }
+  "sites-token" { & (Join-Path $PSScriptRoot "setup-sites-bypass-token.ps1"); if (-not $?) { exit 1 }; exit 0 }
   "install" { & (Join-Path $PSScriptRoot "install-worker-task.ps1"); if (-not $?) { exit 1 }; exit 0 }
   "status" { & (Join-Path $PSScriptRoot "install-worker-task.ps1") -Status; if (-not $?) { exit 1 }; exit 0 }
   "uninstall" { & (Join-Path $PSScriptRoot "install-worker-task.ps1") -Remove; if (-not $?) { exit 1 }; exit 0 }

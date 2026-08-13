@@ -43,13 +43,15 @@ Still requires live-school validation:
 
 ## Security model
 
-There are three separate credential classes:
+There are four separate credential classes:
 
 1. **IAM password:** stays on the HP or NAS worker. It is never stored in D1,
    sent to an AI model, printed in logs, or committed.
 2. **Worker token:** created in Jarvis → Systems, shown once, and stored locally.
    D1 stores only its SHA-256 hash.
-3. **AI API keys:** server/worker secrets only. They never belong in browser
+3. **Sites bypass token:** passes the private Sites sign-in gate for worker API
+   calls. Jarvis still verifies the separate worker token before accepting data.
+4. **AI API keys:** server/worker secrets only. They never belong in browser
    JavaScript.
 
 Automatic password login is explicitly enabled with
@@ -82,6 +84,7 @@ Local files are kept under `%LOCALAPPDATA%\AcademicJarvis` by default:
 - `worker.env` contains non-secret paths and settings;
 - `iam-credential.dpapi.json` contains the Windows-user-bound DPAPI cipher;
 - `worker_token` contains the dashboard pairing token with a user-only ACL;
+- `sites_bypass_token` contains the private Sites API bypass with a user-only ACL;
 - `browser-profile`, `school-files`, `work`, and `logs` contain runtime data.
 
 Run the diagnostic from the repository root at any time:
@@ -131,7 +134,8 @@ checks school sources every 30 minutes and the agent queue every 60 seconds by
 default.
 
 Individual setup pieces can be repeated safely with
-`.\scripts\jarvis.ps1 credentials` and `.\scripts\jarvis.ps1 token`. Stored URLs
+`.\scripts\jarvis.ps1 credentials`, `.\scripts\jarvis.ps1 token`, and
+`.\scripts\jarvis.ps1 sites-token`. Stored URLs
 lose query strings and fragments; common email, token, and long identifier
 patterns are redacted.
 

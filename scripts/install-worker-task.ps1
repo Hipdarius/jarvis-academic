@@ -21,7 +21,9 @@ $folder = $service.GetFolder("\")
 if ($Status) {
   try {
     $task = $folder.GetTask($taskName)
-    Write-Host "Academic Jarvis background task is installed. State: $($task.State)"
+    $stateNames = @{ 0 = "unknown"; 1 = "disabled"; 2 = "queued"; 3 = "ready"; 4 = "running" }
+    $state = if ($stateNames.ContainsKey([int]$task.State)) { $stateNames[[int]$task.State] } else { [string]$task.State }
+    Write-Host "Academic Jarvis background task is installed. State: $state"
   } catch {
     Write-Host "Academic Jarvis background task is not installed."
   }
