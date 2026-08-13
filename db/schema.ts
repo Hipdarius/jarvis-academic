@@ -65,7 +65,9 @@ export const documents = sqliteTable("documents", {
   extractedText: text("extracted_text"),
   createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
   updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
-});
+}, (table) => [
+  uniqueIndex("documents_source_external_unique").on(table.sourceId, table.storageKey),
+]);
 
 export const syncRuns = sqliteTable("sync_runs", {
   id: text("id").primaryKey(),
@@ -117,17 +119,79 @@ export const workerTokens = sqliteTable("worker_tokens", {
   revokedAt: integer("revoked_at", { mode: "timestamp_ms" }),
 });
 
+export const agentRuns = sqliteTable("agent_runs", {
+  id: text("id").primaryKey(),
+  trigger: text("trigger", { enum: ["sync", "chat", "user", "improvement"] }).notNull(),
+  sourceId: text("source_id").references(() => sources.id),
+  subjectId: text("subject_id").references(() => subjects.id),
+  status: text("status", { enum: ["queued", "running", "succeeded", "failed", "needs_approval"] }).notNull().default("queued"),
+  objective: text("objective").notNull(),
+  budgetJobs: integer("budget_jobs").notNull().default(3),
+  budgetTokens: integer("budget_tokens").notNull().default(6000),
+  usedJobs: integer("used_jobs").notNull().default(0),
+  usedTokens: integer("used_tokens").notNull().default(0),
+  summary: text("summary"),
+  createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+  finishedAt: integer("finished_at", { mode: "timestamp_ms" }),
+});
+
 export const agentJobs = sqliteTable("agent_jobs", {
   id: text("id").primaryKey(),
-  kind: text("kind", { enum: ["triage", "study_pack", "project_research", "review", "planning"] }).notNull(),
+  runId: text("run_id").references(() => agentRuns.id),
+  parentJobId: text("parent_job_id"),
+  agentRole: text("agent_role", { enum: ["curator", "planner", "tutor", "reviewer", "improver", "coder"] }).notNull().default("planner"),
+  kind: text("kind", { enum: ["triage", "study_pack", "project_research", "review", "planning", "subject_chat", "improvement", "code_change"] }).notNull(),
   status: text("status", { enum: ["queued", "running", "succeeded", "failed", "needs_approval"] }).notNull().default("queued"),
   priority: integer("priority").notNull().default(50),
+  tokenBudget: integer("token_budget").notNull().default(2400),
   inputJson: text("input_json").notNull(),
   resultJson: text("result_json"),
+  usageJson: text("usage_json"),
   provider: text("provider"),
   model: text("model"),
   error: text("error"),
   createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
   startedAt: integer("started_at", { mode: "timestamp_ms" }),
   finishedAt: integer("finished_at", { mode: "timestamp_ms" }),
+});
+
+export const agentMessages = sqliteTable("agent_messages", {
+  id: text("id").primaryKey(),
+  runId: text("run_id").notNull().references(() => agentRuns.id),
+  jobId: text("job_id").references(() => agentJobs.id),
+  sender: text("sender").notNull(),
+  recipient: text("recipient").notNull(),
+  kind: text("kind", { enum: ["task", "handoff", "observation", "result", "decision"] }).notNull(),
+  contentJson: text("content_json").notNull(),
+  createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+});
+
+export const studyBlocks = sqliteTable("study_blocks", {
+  id: text("id").primaryKey(),
+  academicItemId: text("academic_item_id").references(() => academicItems.id),
+  subjectId: text("subject_id").references(() => subjects.id),
+  title: text("title").notNull(),
+  scheduledFor: text("scheduled_for").notNull(),
+  durationMinutes: integer("duration_minutes").notNull(),
+  reason: text("reason").notNull(),
+  status: text("status", { enum: ["suggested", "accepted", "done", "skipped"] }).notNull().default("suggested"),
+  generatedBy: text("generated_by", { enum: ["deterministic", "agent", "manual"] }).notNull(),
+  sourceFingerprint: text("source_fingerprint").notNull(),
+  createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+  updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
+});
+
+export const improvementProposals = sqliteTable("improvement_proposals", {
+  id: text("id").primaryKey(),
+  runId: text("run_id").references(() => agentRuns.id),
+  title: text("title").notNull(),
+  rationale: text("rationale").notNull(),
+  evidenceJson: text("evidence_json").notNull().default("[]"),
+  scopeJson: text("scope_json").notNull().default("[]"),
+  status: text("status", { enum: ["proposed", "approved", "branch_ready", "testing", "ready", "rejected", "failed"] }).notNull().default("proposed"),
+  branchName: text("branch_name"),
+  implementationSummary: text("implementation_summary"),
+  error: text("error"),
+  createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+  updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
 });

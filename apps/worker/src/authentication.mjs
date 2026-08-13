@@ -23,6 +23,18 @@ function hostname(value) {
   }
 }
 
+function traceAuthentication(page, step, action) {
+  if (process.env.JARVIS_AUTH_TRACE !== "true") return;
+  let location = "unknown";
+  try {
+    const parsed = new URL(page.url());
+    location = `${parsed.origin}${parsed.pathname}`;
+  } catch {
+    // Keep malformed or transient URLs out of diagnostics.
+  }
+  console.error(JSON.stringify({ type: "auth_trace", step, action, location }));
+}
+
 export function isAllowedCredentialHost(value) {
   return credentialHosts.includes(hostname(value));
 }
@@ -98,6 +110,16 @@ async function detectsMfa(page) {
   return /verification code|one.time code|authenticator|eduKey|code de v.rification|best.tigungscode/i.test(text);
 }
 
+export function isConsentUrl(value) {
+  try {
+    const parsed = new URL(value);
+    return educationIdentityHosts.includes(parsed.hostname.toLowerCase())
+      && /\/IAM\/(?:terms_getconsent|consent)/i.test(parsed.pathname);
+  } catch {
+    return false;
+  }
+}
+
 async function visibleUsernameInput(page) {
   return firstVisible(page.locator([
     'input[type="email"]',
@@ -122,7 +144,7 @@ async function waitForStageChange(page, previousUrl, previousStage) {
     const password = await visiblePasswordInput(page);
     const username = await visibleUsernameInput(page);
     if (page.url() !== previousUrl) return;
-    if (previousStage === "username" && password) return;
+    if (previousStage === "username" && password && !isMicrosoftIdentityHost(page.url())) return;
     if (previousStage === "password" && !password) return;
     if (previousStage === "provider" && (password || username)) return;
     if (await detectsMfa(page)) return;
@@ -159,12 +181,14 @@ export async function ensureAuthenticated(page, source, credentials) {
   if (!health.requiresUserAction) return health;
 
   for (let step = 0; step < 12; step += 1) {
+    traceAuthentication(authPage, step, "inspect");
     if (authPage.isClosed()) {
       health = await verifySource(sourcePage, source);
       if (!health.requiresUserAction) return health;
       authPage = sourcePage;
     }
 
+    if (isConsentUrl(authPage.url())) return manualResult(authPage, source, "consent_required");
     if (await detectsMfa(authPage)) return manualResult(authPage, source, "mfa_required");
 
     if (isAllowedPasswordHost(authPage.url()) && hostname(authPage.url()) !== hostname(source.url)) {
@@ -175,6 +199,7 @@ export async function ensureAuthenticated(page, source, credentials) {
     // provider. IAM must win so credentials are never entered into that form.
     const providerEntry = identityRouteStarted ? null : await visibleIdentityEntry(authPage, true);
     if (providerEntry && !isMicrosoftIdentityHost(authPage.url())) {
+      traceAuthentication(authPage, step, "select_identity_provider");
       const key = actionKey(authPage, "provider");
       if (completedActions.has(key)) return manualResult(authPage, source);
       completedActions.add(key);
@@ -185,8 +210,28 @@ export async function ensureAuthenticated(page, source, credentials) {
       continue;
     }
 
+    // Microsoft's legacy sign-in DOM can expose both the email and password
+    // controls at once. The school flow must submit the @school.lu identity
+    // first and follow the redirect; Jarvis never enters IAM passwords here.
+    const microsoftUsernameInput = isMicrosoftIdentityHost(authPage.url())
+      ? await visibleUsernameInput(authPage)
+      : null;
+    if (microsoftUsernameInput) {
+      traceAuthentication(authPage, step, "submit_school_email");
+      const key = actionKey(authPage, "microsoft-username");
+      if (completedActions.has(key)) return manualResult(authPage, source);
+      completedActions.add(key);
+      const previousUrl = authPage.url();
+      await microsoftUsernameInput.fill(schoolEmailFor(credentials.username));
+      identityRouteStarted = true;
+      await clickNextOrSubmit(authPage, microsoftUsernameInput);
+      await waitForStageChange(authPage, previousUrl, "username");
+      continue;
+    }
+
     const passwordInput = await visiblePasswordInput(authPage);
     if (passwordInput) {
+      traceAuthentication(authPage, step, "submit_iam_password");
       if (!identityRouteStarted || !isAllowedPasswordHost(authPage.url())) return manualResult(authPage, source);
       const key = actionKey(authPage, "password");
       if (completedActions.has(key)) return manualResult(authPage, source);
@@ -200,6 +245,7 @@ export async function ensureAuthenticated(page, source, credentials) {
 
     const usernameInput = await visibleUsernameInput(authPage);
     if (usernameInput) {
+      traceAuthentication(authPage, step, "submit_iam_username");
       if (!isAllowedCredentialHost(authPage.url())) return manualResult(authPage, source);
       const key = actionKey(authPage, "username");
       if (completedActions.has(key)) return manualResult(authPage, source);
@@ -220,6 +266,7 @@ export async function ensureAuthenticated(page, source, credentials) {
 
     const staySignedIn = await firstVisible(authPage.getByRole("button", { name: /^(yes|oui|ja)$/i }));
     if (staySignedIn && isMicrosoftIdentityHost(authPage.url())) {
+      traceAuthentication(authPage, step, "confirm_stay_signed_in");
       const key = actionKey(authPage, "consent");
       if (completedActions.has(key)) return manualResult(authPage, source);
       completedActions.add(key);
@@ -229,21 +276,22 @@ export async function ensureAuthenticated(page, source, credentials) {
       continue;
     }
 
-    if (!isAllowedCredentialHost(authPage.url()) && !await hasCredentialField(authPage)) {
-      health = await verifySource(sourcePage, source);
-      if (!health.requiresUserAction) return health;
-      authPage = sourcePage;
-      continue;
-    }
-
     const entry = await visibleIdentityEntry(authPage);
     if (entry) {
+      traceAuthentication(authPage, step, "open_identity_entry");
       const key = actionKey(authPage, "entry");
       if (completedActions.has(key)) return manualResult(authPage, source);
       completedActions.add(key);
       const previousUrl = authPage.url();
       authPage = await clickIdentityEntry(authPage) ?? authPage;
       await waitForStageChange(authPage, previousUrl, "provider");
+      continue;
+    }
+
+    if (!isAllowedCredentialHost(authPage.url()) && !await hasCredentialField(authPage)) {
+      health = await verifySource(sourcePage, source);
+      if (!health.requiresUserAction) return health;
+      authPage = sourcePage;
       continue;
     }
 

@@ -3,20 +3,24 @@
 import { type FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import {
   AlertTriangle,
+  ArrowLeft,
   ArrowRight,
   BookOpen,
   Bot,
   BrainCircuit,
   CalendarDays,
+  CalendarCheck2,
   Check,
   CheckCircle2,
   ClipboardCopy,
   Clock3,
   Database,
   FileText,
+  FileCheck2,
   FolderKanban,
   Gauge,
   GraduationCap,
+  GitBranch,
   Inbox,
   KeyRound,
   LayoutDashboard,
@@ -25,9 +29,12 @@ import {
   LoaderCircle,
   LockKeyhole,
   NotebookPen,
+  MessageSquareText,
+  Paperclip,
   Plus,
   RefreshCw,
   Search,
+  Send,
   Settings2,
   ShieldCheck,
   Sparkles,
@@ -114,6 +121,15 @@ function formatFreshness(value: string | null | undefined) {
 }
 
 function relativeSourceDetail(source: DashboardSource) {
+  const attentionCopy: Record<string, string> = {
+    consent_required: "Accept the Education IAM charter in a headed browser",
+    mfa_required: "Complete the verification step in a headed browser",
+    auth_required: "School sign-in is required",
+    account_attention: "Teams is showing an account or browser warning",
+    workspace_not_ready: "Teams opened, but its workspace did not finish loading",
+    assignments_surface_not_found: "Teams opened, but Jarvis could not find Assignments",
+  };
+  if (attentionCopy[source.detail]) return attentionCopy[source.detail];
   if (!source.lastSuccessAt) return source.detail;
   const date = new Date(source.lastSuccessAt);
   if (Number.isNaN(date.getTime())) return source.detail;
@@ -123,6 +139,19 @@ function relativeSourceDetail(source: DashboardSource) {
     hour: "2-digit",
     minute: "2-digit",
   }).format(date)}`;
+}
+
+function formatPlanDate(value: string) {
+  const date = new Date(`${value}T12:00:00`);
+  return Number.isNaN(date.getTime())
+    ? value
+    : new Intl.DateTimeFormat(undefined, { weekday: "short", day: "numeric", month: "short" }).format(date);
+}
+
+function fileTypeLabel(mimeType: string | null) {
+  if (!mimeType) return "File";
+  const subtype = mimeType.split("/")[1]?.split(";")[0] ?? mimeType;
+  return subtype.replace("vnd.openxmlformats-officedocument.", "").replaceAll("-", " ").toUpperCase();
 }
 
 function sourceTone(status: DashboardSource["status"]) {
@@ -211,6 +240,14 @@ export default function Home() {
   const [pairError, setPairError] = useState("");
   const [copied, setCopied] = useState(false);
   const [currentDate, setCurrentDate] = useState<Date | null>(null);
+  const [selectedSubject, setSelectedSubject] = useState<string | null>(null);
+  const [chatText, setChatText] = useState("");
+  const [chatPending, setChatPending] = useState(false);
+  const [chatError, setChatError] = useState("");
+  const [activeChatJobId, setActiveChatJobId] = useState<string | null>(null);
+  const [studyPendingId, setStudyPendingId] = useState<string | null>(null);
+  const [proposalConfirmId, setProposalConfirmId] = useState<string | null>(null);
+  const [proposalPendingId, setProposalPendingId] = useState<string | null>(null);
 
   const loadState = useCallback(async (silent = false) => {
     if (!silent) setStateLoading(true);
@@ -274,6 +311,7 @@ export default function Home() {
   });
   const nextDeadline = scheduledItems[0] ?? null;
   const healthySources = (state?.sources ?? []).filter((source) => source.status === "healthy").length;
+  const attentionSources = (state?.sources ?? []).filter((source) => source.status === "attention" || source.status === "error").length;
   const totalSources = Math.max(state?.sources.length ?? 0, 4);
   const dashboardFreshness = state?.mode === "live"
     ? formatFreshness(state.generatedAt)
@@ -283,8 +321,16 @@ export default function Home() {
   const subjectGroups = useMemo(() => {
     const grouped = new Map<string, DashboardItem[]>();
     for (const item of state?.items ?? []) grouped.set(item.subject, [...(grouped.get(item.subject) ?? []), item]);
+    for (const document of state?.documents ?? []) if (!grouped.has(document.subject)) grouped.set(document.subject, []);
+    for (const block of state?.studyBlocks ?? []) if (!grouped.has(block.subject)) grouped.set(block.subject, []);
+    for (const note of state?.notes ?? []) if (!grouped.has(note.subject)) grouped.set(note.subject, []);
     return [...grouped.entries()].sort(([a], [b]) => a.localeCompare(b));
   }, [state]);
+
+  const activeStudyBlocks = useMemo(
+    () => (state?.studyBlocks ?? []).filter((block) => block.status !== "done" && block.status !== "skipped"),
+    [state],
+  );
 
   function openCommand(prefill = "") {
     setCommandText(prefill);
@@ -353,6 +399,72 @@ export default function Home() {
     window.setTimeout(() => setCopied(false), 1_800);
   }
 
+  async function askSubject(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const message = chatText.trim();
+    if (!message || chatPending) return;
+    setChatPending(true);
+    setChatError("");
+    try {
+      const response = await fetch("/api/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message, subject: selectedSubject }),
+      });
+      const payload = await response.json() as { jobId?: string; error?: string };
+      if (!response.ok || !payload.jobId) throw new Error(payload.error ?? "Jarvis could not queue that question.");
+      setActiveChatJobId(payload.jobId);
+      setChatText("");
+      await loadState(true);
+    } catch (error) {
+      setChatError(error instanceof Error ? error.message : "Jarvis could not queue that question.");
+    } finally {
+      setChatPending(false);
+    }
+  }
+
+  async function changeStudyStatus(id: string, status: "accepted" | "done" | "skipped") {
+    if (studyPendingId) return;
+    setStudyPendingId(id);
+    const previous = state;
+    setState((current) => current ? {
+      ...current,
+      studyBlocks: current.studyBlocks.map((block) => block.id === id ? { ...block, status } : block),
+    } : current);
+    try {
+      const response = await fetch(`/api/study/${encodeURIComponent(id)}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status }),
+      });
+      if (!response.ok) throw new Error("Study plan update failed.");
+    } catch {
+      setState(previous);
+    } finally {
+      setStudyPendingId(null);
+    }
+  }
+
+  async function approveProposal(id: string) {
+    if (proposalConfirmId !== id) {
+      setProposalConfirmId(id);
+      return;
+    }
+    setProposalPendingId(id);
+    try {
+      const response = await fetch(`/api/improvements/${encodeURIComponent(id)}/approve`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ confirmation: "prepare_branch" }),
+      });
+      if (!response.ok) throw new Error("Branch preparation could not be approved.");
+      setProposalConfirmId(null);
+      await loadState(true);
+    } finally {
+      setProposalPendingId(null);
+    }
+  }
+
   function renderToday() {
     const greeting = !currentDate
       ? "Welcome back"
@@ -418,6 +530,33 @@ export default function Home() {
           <div><strong>{scheduledItems.length}</strong><span>Scheduled</span></div>
           <div><strong>{inboxItems.length}</strong><span>Inbox updates</span></div>
           <div><strong>{healthySources}/{totalSources}</strong><span>Sources live</span></div>
+        </section>
+
+        <section className="study-plan-band">
+          <div className="section-heading compact">
+            <div><p className="eyebrow">Adaptive plan</p><h2>Study windows</h2></div>
+            <span className="count-chip">{activeStudyBlocks.length}</span>
+          </div>
+          {activeStudyBlocks.length ? (
+            <div className="study-block-list">
+              {activeStudyBlocks.slice(0, 4).map((block) => (
+                <article className="study-block-row" key={block.id}>
+                  <span className="study-date"><strong>{formatPlanDate(block.scheduledFor)}</strong><small>{block.durationMinutes} min</small></span>
+                  <div><strong>{block.title}</strong><span>{block.subject} / {block.reason}</span></div>
+                  <button
+                    aria-label={block.status === "accepted" ? `Mark ${block.title} done` : `Accept ${block.title}`}
+                    disabled={studyPendingId === block.id}
+                    onClick={() => void changeStudyStatus(block.id, block.status === "accepted" ? "done" : "accepted")}
+                    title={block.status === "accepted" ? "Mark done" : "Accept study window"}
+                    type="button"
+                  >
+                    {studyPendingId === block.id ? <LoaderCircle className="spin" size={16} /> : block.status === "accepted" ? <CheckCircle2 size={16} /> : <CalendarCheck2 size={16} />}
+                    {block.status === "accepted" ? "Done" : "Accept"}
+                  </button>
+                </article>
+              ))}
+            </div>
+          ) : <p className="section-empty-copy">Study windows appear when verified work has an exact deadline. Date-only records stay unscheduled until a time is known.</p>}
         </section>
 
         <div className="dashboard-layout">
@@ -537,21 +676,98 @@ export default function Home() {
   }
 
   function renderSubjects() {
+    if (selectedSubject) {
+      const subjectItems = state?.items.filter((item) => item.subject === selectedSubject) ?? [];
+      const subjectDocuments = state?.documents.filter((document) => document.subject === selectedSubject) ?? [];
+      const subjectBlocks = state?.studyBlocks.filter((block) => block.subject === selectedSubject && block.status !== "skipped") ?? [];
+      const chatJobs = state?.agentJobs.filter((job) => job.kind === "subject_chat" && job.subject === selectedSubject) ?? [];
+      const activeChat = activeChatJobId ? state?.agentJobs.find((job) => job.id === activeChatJobId) : null;
+      return (
+        <section className="collection-page subject-workspace">
+          <button className="back-action" onClick={() => { setSelectedSubject(null); setActiveChatJobId(null); setChatError(""); }} type="button"><ArrowLeft size={16} />All subjects</button>
+          <div className="page-heading subject-heading">
+            <div><p className="eyebrow">Subject workspace</p><h1>{selectedSubject}</h1><p>{subjectItems.length} verified record{subjectItems.length === 1 ? "" : "s"}, {subjectDocuments.length} indexed file{subjectDocuments.length === 1 ? "" : "s"}, and {subjectBlocks.length} study window{subjectBlocks.length === 1 ? "" : "s"}.</p></div>
+          </div>
+
+          <div className="subject-layout">
+            <div className="subject-evidence">
+              <section className="data-section">
+                <div className="section-heading compact"><div><p className="eyebrow">Source evidence</p><h2>Assignments and updates</h2></div><span className="count-chip">{subjectItems.length}</span></div>
+                {subjectItems.length ? <div className="academic-list">{activeDashboardItems(subjectItems).map((item) => <AcademicItemRow item={item} key={item.id} />)}</div> : <p className="section-empty-copy">No academic records are indexed for this subject.</p>}
+              </section>
+
+              <section className="data-section">
+                <div className="section-heading compact"><div><p className="eyebrow">Teacher material</p><h2>Indexed files</h2></div><span className="count-chip">{subjectDocuments.length}</span></div>
+                {subjectDocuments.length ? (
+                  <div className="document-list">
+                    {subjectDocuments.map((document) => (
+                      <article className="document-row" key={document.id}>
+                        <span><Paperclip size={17} /></span>
+                        <div><strong>{document.name}</strong><small>{document.source} / {fileTypeLabel(document.mimeType)} / {document.extracted ? "text indexed" : "stored locally"}</small></div>
+                        {document.sourceUrl ? <a aria-label={`Open source for ${document.name}`} href={document.sourceUrl} rel="noreferrer" target="_blank" title="Open source"><ArrowRight size={16} /></a> : null}
+                      </article>
+                    ))}
+                  </div>
+                ) : <p className="section-empty-copy">No teacher files have been indexed for this subject.</p>}
+              </section>
+
+              <section className="data-section">
+                <div className="section-heading compact"><div><p className="eyebrow">Study load</p><h2>Suggested windows</h2></div><span className="count-chip">{subjectBlocks.length}</span></div>
+                {subjectBlocks.length ? <div className="study-block-list">{subjectBlocks.map((block) => (
+                  <article className="study-block-row" key={block.id}>
+                    <span className="study-date"><strong>{formatPlanDate(block.scheduledFor)}</strong><small>{block.durationMinutes} min</small></span>
+                    <div><strong>{block.title}</strong><span>{block.reason}</span></div>
+                    <button aria-label={block.status === "accepted" ? `Mark ${block.title} done` : `Accept ${block.title}`} onClick={() => void changeStudyStatus(block.id, block.status === "accepted" ? "done" : "accepted")} title={block.status === "accepted" ? "Mark done" : "Accept"} type="button">{block.status === "accepted" ? <CheckCircle2 size={16} /> : <CalendarCheck2 size={16} />}</button>
+                  </article>
+                ))}</div> : <p className="section-empty-copy">No exact deadlines currently require a study window.</p>}
+              </section>
+            </div>
+
+            <aside className="data-section subject-chat">
+              <div className="section-heading compact"><div><p className="eyebrow">Evidence-aware tutor</p><h2>Ask Jarvis</h2></div><MessageSquareText size={19} /></div>
+              <form onSubmit={askSubject}>
+                <label><span className="sr-only">Ask about {selectedSubject}</span><textarea maxLength={4000} onChange={(event) => setChatText(event.target.value)} placeholder={`Ask about ${selectedSubject}`} rows={4} value={chatText} /></label>
+                <button disabled={!chatText.trim() || chatPending} type="submit">{chatPending ? <LoaderCircle className="spin" size={16} /> : <Send size={16} />}{chatPending ? "Queuing" : "Ask"}</button>
+              </form>
+              {chatError ? <p className="form-error" role="alert">{chatError}</p> : null}
+              <div className="chat-history" aria-live="polite">
+                {activeChat && !chatJobs.some((job) => job.id === activeChat.id) ? (
+                  <article><span className={`job-state ${activeChat.status}`}>{activeChat.status}</span><strong>Your question</strong><p>{activeChat.result ?? "Waiting for the local worker."}</p></article>
+                ) : null}
+                {chatJobs.slice(0, 6).map((job) => (
+                  <article key={job.id}>
+                    <span className={`job-state ${job.status}`}>{job.status}</span>
+                    <strong>{job.prompt ?? "Subject question"}</strong>
+                    <p>{job.result ?? (job.error || "Waiting for the local worker.")}</p>
+                    <small>{job.provider ? `${job.provider}${job.model ? ` / ${job.model}` : ""}` : "Queued locally"}</small>
+                  </article>
+                ))}
+                {!chatJobs.length && !activeChat ? <p className="section-empty-copy">No subject conversation yet.</p> : null}
+              </div>
+            </aside>
+          </div>
+        </section>
+      );
+    }
+
     return (
       <section className="collection-page">
         <div className="page-heading"><div><p className="eyebrow">Courses from real records</p><h1>Subjects</h1><p>{subjectGroups.length} subject{subjectGroups.length === 1 ? "" : "s"} currently indexed.</p></div></div>
         {subjectGroups.length ? (
-          <div className="entity-grid">
+          <div className="subject-index">
             {subjectGroups.map(([subject, items]) => {
               const openCount = items.filter((item) => item.status !== "done" && item.status !== "cancelled").length;
               const sourceCount = new Set(items.map((item) => item.source)).size;
+              const documentCount = state?.documents.filter((document) => document.subject === subject).length ?? 0;
+              const studyCount = state?.studyBlocks.filter((block) => block.subject === subject && block.status !== "done" && block.status !== "skipped").length ?? 0;
               return (
-                <article className="entity-card" key={subject}>
+                <button className="subject-index-row" key={subject} onClick={() => setSelectedSubject(subject)} type="button">
                   <span className="entity-icon"><GraduationCap size={19} /></span>
-                  <p className="eyebrow">{openCount} open / {sourceCount} source{sourceCount === 1 ? "" : "s"}</p>
-                  <h2>{subject}</h2>
-                  <p>{items.length} verified record{items.length === 1 ? "" : "s"}</p>
-                </article>
+                  <div><h2>{subject}</h2><p>{openCount} open / {sourceCount} source{sourceCount === 1 ? "" : "s"}</p></div>
+                  <span><strong>{documentCount}</strong><small>files</small></span>
+                  <span><strong>{studyCount}</strong><small>study</small></span>
+                  <ArrowRight size={18} />
+                </button>
               );
             })}
           </div>
@@ -584,9 +800,10 @@ export default function Home() {
 
   function renderKnowledge() {
     const notes = state?.notes ?? [];
+    const indexedDocuments = state?.documents ?? [];
     return (
       <section className="collection-page">
-        <div className="page-heading"><div><p className="eyebrow">Captured context</p><h1>Knowledge</h1><p>{notes.length} saved note{notes.length === 1 ? "" : "s"}.</p></div><button className="primary-action" onClick={() => openCommand("Remember this: ")} type="button"><Plus size={17} />New note</button></div>
+        <div className="page-heading"><div><p className="eyebrow">Captured and source-derived context</p><h1>Knowledge</h1><p>{notes.length} saved note{notes.length === 1 ? "" : "s"} and {indexedDocuments.length} indexed file{indexedDocuments.length === 1 ? "" : "s"}.</p></div><button className="primary-action" onClick={() => openCommand("Remember this: ")} type="button"><Plus size={17} />New note</button></div>
         {notes.length ? (
           <div className="entity-grid">
             {notes.map((note) => (
@@ -599,6 +816,16 @@ export default function Home() {
             ))}
           </div>
         ) : <EmptyState icon={NotebookPen} title="No notes yet" copy="Facts and teacher remarks you capture will appear here." />}
+        <section className="data-section knowledge-documents">
+          <div className="section-heading compact"><div><p className="eyebrow">Protected worker storage</p><h2>School files</h2></div><span className="count-chip">{indexedDocuments.length}</span></div>
+          {indexedDocuments.length ? <div className="document-list">{indexedDocuments.map((document) => (
+            <article className="document-row" key={document.id}>
+              <span>{document.extracted ? <FileCheck2 size={17} /> : <Paperclip size={17} />}</span>
+              <div><strong>{document.name}</strong><small>{document.subject} / {document.source} / {document.extracted ? "text indexed" : fileTypeLabel(document.mimeType)}</small></div>
+              {document.sourceUrl ? <a aria-label={`Open source for ${document.name}`} href={document.sourceUrl} rel="noreferrer" target="_blank" title="Open source"><ArrowRight size={16} /></a> : null}
+            </article>
+          ))}</div> : <p className="section-empty-copy">No teacher files have been downloaded by the worker.</p>}
+        </section>
       </section>
     );
   }
@@ -676,17 +903,58 @@ export default function Home() {
         </div>
 
         <section className="data-section agent-section">
-          <div className="section-heading compact"><div><p className="eyebrow">Asynchronous work</p><h2>Agent queue</h2></div><span className="count-chip">{state?.agentJobs.length ?? 0}</span></div>
-          {state?.agentJobs.length ? (
-            <div className="agent-list">
-              {state.agentJobs.map((job) => (
-                <article className="agent-row" key={job.id}>
-                  <span className={`job-state ${job.status}`}>{job.status}</span>
-                  <div><strong>{job.kind.replaceAll("_", " ")}</strong><span>{job.provider ? `${job.provider}${job.model ? ` / ${job.model}` : ""}` : "Waiting for the local worker"}</span>{job.result ? <p>{job.result}</p> : null}{job.error ? <p className="form-error">{job.error}</p> : null}</div>
+          <div className="section-heading compact"><div><p className="eyebrow">Bounded autonomy</p><h2>Agent runs</h2></div><span className="count-chip">{state?.agentRuns.length ?? 0}</span></div>
+          {state?.agentRuns.length ? (
+            <div className="agent-run-list">
+              {state.agentRuns.map((run) => (
+                <article className="agent-run-row" key={run.id}>
+                  <div className="agent-run-heading">
+                    <span className={`job-state ${run.status}`}>{run.status}</span>
+                    <div><strong>{run.objective}</strong><span>{run.trigger} trigger / {run.usedJobs} of {run.budgetJobs} jobs / {run.usedTokens.toLocaleString()} of {run.budgetTokens.toLocaleString()} tokens</span></div>
+                  </div>
+                  {run.messages.length ? (
+                    <div className="agent-message-flow">
+                      {run.messages.slice().reverse().map((message) => (
+                        <div key={message.id}><span>{message.sender} <ArrowRight size={12} /> {message.recipient}</span><p>{message.content}</p></div>
+                      ))}
+                    </div>
+                  ) : <p className="section-empty-copy">The orchestrator is waiting for the first worker claim.</p>}
                 </article>
               ))}
             </div>
-          ) : <p className="section-empty-copy">No queued or recent agent work.</p>}
+          ) : <p className="section-empty-copy">No autonomous run has started. A verified source change or subject question will create one.</p>}
+          {state?.agentJobs.length ? (
+            <details className="recent-jobs">
+              <summary>Recent individual jobs ({state.agentJobs.length})</summary>
+              <div className="agent-list">
+                {state.agentJobs.map((job) => (
+                  <article className="agent-row" key={job.id}>
+                    <span className={`job-state ${job.status}`}>{job.status}</span>
+                    <div><strong>{job.agentRole} / {job.kind.replaceAll("_", " ")}</strong><span>{job.provider ? `${job.provider}${job.model ? ` / ${job.model}` : ""}` : "Waiting for the local worker"}</span>{job.result ? <p>{job.result}</p> : null}{job.error ? <p className="form-error">{job.error}</p> : null}</div>
+                  </article>
+                ))}
+              </div>
+            </details>
+          ) : null}
+        </section>
+
+        <section className="data-section proposal-section">
+          <div className="section-heading compact"><div><p className="eyebrow">Self-improvement boundary</p><h2>Improvement proposals</h2></div><GitBranch size={19} /></div>
+          {state?.improvementProposals.length ? (
+            <div className="proposal-list">
+              {state.improvementProposals.map((proposal) => (
+                <article className="proposal-row" key={proposal.id}>
+                  <div><span className={`job-state ${proposal.status}`}>{proposal.status.replaceAll("_", " ")}</span><h3>{proposal.title}</h3><p>{proposal.rationale}</p>{proposal.branchName ? <code>{proposal.branchName}</code> : null}{proposal.implementationSummary ? <small>{proposal.implementationSummary}</small> : null}</div>
+                  {proposal.status === "proposed" ? (
+                    <button className={proposalConfirmId === proposal.id ? "confirm-action" : "secondary-action"} disabled={proposalPendingId === proposal.id} onClick={() => void approveProposal(proposal.id)} type="button">
+                      {proposalPendingId === proposal.id ? <LoaderCircle className="spin" size={16} /> : <GitBranch size={16} />}
+                      {proposalPendingId === proposal.id ? "Approving" : proposalConfirmId === proposal.id ? "Confirm branch" : "Prepare branch"}
+                    </button>
+                  ) : null}
+                </article>
+              ))}
+            </div>
+          ) : <p className="section-empty-copy">No recurring connector issue has produced an improvement proposal.</p>}
         </section>
 
         <section className="data-section setup-section">
@@ -718,12 +986,12 @@ export default function Home() {
           {navItems.map(({ label, icon: Icon }) => (
             <button className={`nav-item ${activeSection === label ? "active" : ""}`} key={label} onClick={() => setActiveSection(label)} type="button">
               <Icon size={18} strokeWidth={1.8} /><span>{label}</span>
-              {label === "Systems" && healthySources === 0 ? <span className="nav-alert" aria-label="Worker needs attention">!</span> : null}
+              {label === "Systems" && attentionSources > 0 ? <span className="nav-alert" aria-label={`${attentionSources} source${attentionSources === 1 ? "" : "s"} need attention`}>{attentionSources}</span> : null}
             </button>
           ))}
         </nav>
         <div className="sidebar-bottom">
-          <div className={`sidebar-status ${healthySources ? "live" : "waiting"}`}><span>{healthySources ? <ShieldCheck size={16} /> : <Database size={16} />}</span><div><strong>{healthySources ? "Worker online" : "Worker waiting"}</strong><small>{healthySources}/{totalSources} sources live</small></div></div>
+          <div className={`sidebar-status ${healthySources ? "live" : "waiting"}`}><span>{healthySources ? <ShieldCheck size={16} /> : <Database size={16} />}</span><div><strong>{attentionSources ? `${attentionSources} needs attention` : healthySources ? "Worker online" : "Worker waiting"}</strong><small>{healthySources}/{totalSources} sources live</small></div></div>
           <button className="profile-button" onClick={() => setActiveSection("Systems")} type="button"><span className="avatar">DF</span><span><strong>Darius</strong><small>Private workspace</small></span><Settings2 size={16} /></button>
         </div>
       </aside>
@@ -732,7 +1000,7 @@ export default function Home() {
         <header className="topbar">
           <div className="mobile-brand"><span className="brand-mark">J</span><strong>Jarvis</strong></div>
           <button aria-label="Open Universal Command" className="command-trigger" onClick={() => openCommand()} title="Open Universal Command" type="button"><Search size={17} /><span>Search or capture anything</span></button>
-          <span className={`live-badge ${healthySources ? "online" : "offline"}`}><i />{healthySources}/{totalSources} sources live</span>
+          <span className={`live-badge ${attentionSources ? "partial" : healthySources ? "online" : "offline"}`}><i />{attentionSources ? `${attentionSources} needs attention` : `${healthySources}/${totalSources} sources live`}</span>
           <div className="top-actions">
             <button className="icon-button" aria-label="Refresh school data" onClick={() => void loadState()} title="Refresh school data" type="button"><RefreshCw className={stateLoading ? "spin" : ""} size={18} /></button>
             <button aria-label="Capture with Universal Command" className="capture-button" onClick={() => openCommand()} title="Capture with Universal Command" type="button"><Sparkles size={16} /><span>Capture</span></button>

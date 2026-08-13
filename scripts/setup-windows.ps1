@@ -65,6 +65,7 @@ $environmentValues = [ordered]@{
   JARVIS_TIMEZONE = "Europe/Luxembourg"
   JARVIS_SYNC_INTERVAL_MINUTES = "30"
   JARVIS_AGENT_POLL_SECONDS = "60"
+  JARVIS_AGENT_AUTO_TRIAGE = "true"
 }
 Update-JarvisEnvironmentFile -Path $configFile -Values $environmentValues -Header "# Academic Jarvis local worker configuration. This file contains paths and settings, not passwords or tokens."
 Protect-JarvisFile -Path $configFile

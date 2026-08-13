@@ -23,22 +23,27 @@ export const sources = {
     key: "webuntis",
     label: "WebUntis",
     url: httpsUrl("WEBUNTIS_BASE_URL", "https://lam.webuntis.com/WebUntis/"),
+    settleMs: 1_200,
     navigation: ["Mein Stundenplan", "Hausaufgaben", "Prüfungen", "Mitteilungen", "Kurse"],
   },
   academy: {
     key: "academy",
     label: "academy.am.lu",
     url: httpsUrl("ACADEMY_MOODLE_BASE_URL", "https://academy.am.lu/"),
+    settleMs: 1_500,
   },
   edumoodle: {
     key: "edumoodle",
     label: "eduMoodle",
     url: httpsUrl("EDU_MOODLE_BASE_URL", "https://ssl.education.lu/eduMoodle/"),
+    settleMs: 1_500,
   },
   teams: {
     key: "teams",
     label: "Microsoft Teams",
     url: httpsUrl("TEAMS_BASE_URL", "https://teams.microsoft.com/"),
+    // Teams briefly renders its own shell before a delayed OAuth redirect.
+    settleMs: 8_000,
   },
 };
 

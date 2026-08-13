@@ -13,7 +13,6 @@ import { inspectSession, navigateToSource } from "./inspection.mjs";
 import { appendEvent, writeJson } from "./io.mjs";
 import { dashboardUrl, readSitesBypassToken, readWorkerToken, publishSyncResult } from "./publish.mjs";
 import { providerStatus, runRoutedTask } from "./agents/providers.mjs";
-import { triageNormalizedItems } from "./agents/triage.mjs";
 import { drainAgentJobs } from "./agents/jobs.mjs";
 import { syncSource } from "./sources/index.mjs";
 
@@ -182,7 +181,7 @@ async function login(key) {
     console.log("Do not type your password in this terminal or share it with Jarvis.");
 
     const prompt = createInterface({ input: process.stdin, output: process.stdout });
-    await prompt.question("Press Enter after the school page is fully open… ");
+    await prompt.question("Press Enter after the school page is fully open... ");
     prompt.close();
     return inspectSession(page, source);
   });
@@ -247,13 +246,6 @@ async function synchronize(source) {
       state: "failed",
       error: error instanceof Error ? error.message : String(error),
     }));
-    let triage = null;
-    if (process.env.JARVIS_AGENT_AUTO_TRIAGE === "true" && Array.isArray(result.items) && result.items.length) {
-      triage = await triageNormalizedItems(source, result.items).catch((error) => ({
-        state: "failed",
-        error: error instanceof Error ? error.message : String(error),
-      }));
-    }
     await appendEvent(path.join(workerConfig.stateDirectory, "events.jsonl"), {
       type: "sync_completed",
       source: source.key,
@@ -261,7 +253,7 @@ async function synchronize(source) {
       finishedAt: new Date().toISOString(),
       state: result.health?.state ?? "unknown",
       publication: publication.state,
-      triage: triage ? (triage.state ?? "completed") : "skipped",
+      triage: publication.agentRunId ? "queued" : "skipped",
     });
     return { ...result, publication };
   } catch (error) {

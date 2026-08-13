@@ -65,6 +65,7 @@ test("Windows bootstrap persists only non-secret settings", {
     assert.match(configuration, /JARVIS_SITES_BYPASS_TOKEN_FILE=/);
     assert.match(configuration, /JARVIS_IAM_DPAPI_FILE=/);
     assert.match(configuration, /JARVIS_ALLOW_PASSWORD_LOGIN=true/);
+    assert.match(configuration, /JARVIS_AGENT_AUTO_TRIAGE=true/);
     assert.doesNotMatch(configuration, /JARVIS_WORKER_TOKEN=/);
     assert.doesNotMatch(configuration, /JARVIS_SITES_BYPASS_TOKEN=/);
     assert.doesNotMatch(configuration, /JARVIS_IAM_PASSWORD=/);

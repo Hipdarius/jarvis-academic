@@ -6,6 +6,7 @@ import {
   iamUsernameFor,
   isAllowedCredentialHost,
   isAllowedPasswordHost,
+  isConsentUrl,
   isMicrosoftIdentityHost,
   schoolEmailFor,
 } from "../src/authentication.mjs";
@@ -57,6 +58,12 @@ test("passwords are restricted to Education IAM and never entered at Microsoft",
   assert.equal(isMicrosoftIdentityHost("https://login.microsoftonline.com/tenant"), true);
 });
 
+test("recognizes IAM consent as a manual account action", () => {
+  assert.equal(isConsentUrl("https://auth.education.lu/module.php/IAM/terms_getconsent"), true);
+  assert.equal(isConsentUrl("https://auth.education.lu/module.php/core/loginuserpass.php"), false);
+  assert.equal(isConsentUrl("https://auth.education.lu.evil.example/module.php/IAM/terms_getconsent"), false);
+});
+
 test("derives the school email while preserving the IAM username", () => {
   assert.equal(schoolEmailFor("student123"), "student123@school.lu");
   assert.equal(schoolEmailFor("student@school.lu"), "student@school.lu");
@@ -69,6 +76,8 @@ test("recognizes IAM and Microsoft provider choices", () => {
   assert.equal(identityEntryNamePattern.test("Login with IAM"), true);
   assert.equal(providerEntryNamePattern.test("IAM"), true);
   assert.equal(providerEntryNamePattern.test("Office 365"), true);
+  assert.equal(providerEntryNamePattern.test("Authentication with username and password"), true);
   assert.equal(providerEntryNamePattern.test("Sign in"), false);
   assert.match(identityEntryAttributeSelector, /value\*="iam"/i);
+  assert.match(identityEntryAttributeSelector, /name\$=":auth:iam"/i);
 });

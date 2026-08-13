@@ -17,6 +17,7 @@
 # next.js
 /.next/
 /out/
+/.vinext/
 
 # misc
 .DS_Store
@@ -43,6 +44,7 @@ yarn-error.log*
 
 # typescript
 next-env.d.ts
+*.tsbuildinfo
 /dist/
 /.wrangler/
 /.sites-runtime/

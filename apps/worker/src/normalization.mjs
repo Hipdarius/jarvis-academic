@@ -1,15 +1,18 @@
 import { createHash } from "node:crypto";
 
-const explicitTask = /\b(assign(?:ment)?|aufgabe(?:n)?|devoir|due|exam|examen|exercise(?:s)?|hausaufgabe(?:n)?|homework|prüfung(?:en)?|presentation|présentation|referat|submit|test|worksheet)\b/i;
-const presentationSignal = /\b(presentation|présentation|referat|vortrag|powerpoint|slides?)\b/i;
+import { workerConfig } from "./config.mjs";
+import { parseSourceDate } from "./source-time.mjs";
+
+const explicitTask = /\b(assign(?:ment)?|aufgabe(?:n)?|devoir|due|exam|examen|exercise(?:s)?|hausaufgabe(?:n)?|homework|pr(?:u|ue)fung(?:en)?|presentation|referat|submit|test|worksheet)\b/i;
+const presentationSignal = /\b(presentation|referat|vortrag|powerpoint|slides?)\b/i;
 const subjectRules = [
   ["Mathematics", /\b(algebra|analysis|calculus|math(?:ematics?)?|mathematik|matrix|probability|trigonometry)\b/i],
   ["Databases", /\b(database|datenbank|normalization|sql)\b/i],
   ["Computer Science", /\b(computer science|informatik|java|netbeans|programming|python)\b/i],
-  ["Physics", /\b(physics|physik|mécanique|mechanics)\b/i],
-  ["Economics", /\b(economics?|economy|économie|wirtschaft)\b/i],
+  ["Physics", /\b(physics|physik|mechanics?)\b/i],
+  ["Economics", /\b(economics?|economy|wirtschaft)\b/i],
   ["English", /\benglish|anglais\b/i],
-  ["French", /\bfran[cç]ais|french\b/i],
+  ["French", /\bfran(?:c|cais)|french\b/i],
   ["German", /\bdeutsch|german\b/i],
 ];
 
@@ -18,26 +21,11 @@ function clean(value) {
 }
 
 function stableId(source, bucket, row) {
+  if (row.externalId) return clean(row.externalId).slice(0, 160);
   return createHash("sha256")
     .update(`${source}\u0000${bucket}\u0000${clean(row.text)}\u0000${clean(row.href)}`)
     .digest("hex")
     .slice(0, 32);
-}
-
-function datesIn(text, reference = new Date()) {
-  const matches = [...text.matchAll(/\b(\d{1,2})[.\/-](\d{1,2})(?:[.\/-](\d{2}|\d{4}))?(?:\s+(?:at|um|à)?\s*(\d{1,2}):(\d{2}))?\b/g)];
-  return matches.flatMap((match) => {
-    const day = Number(match[1]);
-    const month = Number(match[2]);
-    let year = match[3] ? Number(match[3]) : reference.getUTCFullYear();
-    if (year < 100) year += 2000;
-    if (day < 1 || day > 31 || month < 1 || month > 12 || year < 2020 || year > 2100) return [];
-    const hour = match[4] ? Number(match[4]) : 23;
-    const minute = match[5] ? Number(match[5]) : 59;
-    const value = new Date(Date.UTC(year, month - 1, day, hour, minute));
-    if (value.getUTCDate() !== day || value.getUTCMonth() !== month - 1) return [];
-    return [value];
-  });
 }
 
 function inferredSubject(text) {
@@ -48,44 +36,50 @@ function rowTitle(row, fallback) {
   const cells = Array.isArray(row.cells) ? row.cells.map(clean).filter(Boolean) : [];
   const candidates = cells.filter((value) => !/^\d{1,2}[.\/-]\d{1,2}/.test(value) && !/^\d{1,2}:\d{2}$/.test(value));
   const explicit = candidates.find((value) => explicitTask.test(value) && value.length >= 5);
-  const longest = candidates.sort((a, b) => b.length - a.length)[0];
-  return clean(explicit || longest || row.title || row.ariaLabel || row.text || fallback).slice(0, 300);
+  const longest = [...candidates].sort((a, b) => b.length - a.length)[0];
+  return clean(row.title || explicit || longest || row.ariaLabel || row.text || fallback).slice(0, 300);
 }
 
 function typeFor(bucket, text) {
   if (/mitteilung|announcement|news/i.test(bucket)) return "announcement";
   if (presentationSignal.test(text)) return "presentation";
-  if (/prüfung|exam|examen|test/i.test(bucket) || /\b(exam|examen|prüfung|test)\b/i.test(text)) return "test";
+  if (/exam|examen|test/i.test(bucket) || /\b(exam|examen|test)\b/i.test(text)) return "test";
   if (/lesson|stunde|timetable|stundenplan/i.test(bucket)) return "lesson";
   if (/homework|hausaufgabe|assignment|devoir/i.test(bucket) || explicitTask.test(text)) return "homework";
   return null;
 }
 
 function normalizeRow({ source, sourceKind, bucket, row, reference }) {
-  const text = clean([row.text, row.ariaLabel, row.title, ...(row.cells ?? [])].filter(Boolean).join(" | "));
+  const text = clean([row.text, row.description, row.ariaLabel, row.title, ...(row.cells ?? [])].filter(Boolean).join(" | "));
   const type = typeFor(bucket, text);
   const taskLink = /\/(?:mod\/assign|assignments?)(?:\/|$)/i.test(row.href ?? "");
   if (!type && !taskLink) return null;
   const resolvedType = type ?? "homework";
   const title = rowTitle(row, `${bucket} item`);
   if (!title || title.length < 3) return null;
-  const dates = datesIn(text, reference);
-  const lastDate = dates.at(-1);
+  const sourceDate = parseSourceDate(text, { reference, timeZone: workerConfig.timezone });
   const item = {
     source: sourceKind,
     sourceExternalId: `${source}:${stableId(source, bucket, row)}`,
     type: resolvedType,
     title,
-    description: text === title ? undefined : text.slice(0, 2_000),
-    subject: inferredSubject(text),
+    description: clean(row.description || (text === title ? "" : text)).slice(0, 2_000) || undefined,
+    subject: clean(row.subject) || inferredSubject(text),
+    teacher: clean(row.teacher) || undefined,
     sourceUrl: row.href || undefined,
     evidence: "source_derived",
-    confidence: lastDate ? 92 : 82,
-    raw: { bucket, row },
+    confidence: sourceDate?.precision === "datetime" ? 94 : sourceDate ? 86 : 82,
+    raw: {
+      bucket,
+      dueLabel: sourceDate?.label,
+      duePrecision: sourceDate?.precision,
+      submissionStatus: clean(row.submissionStatus) || undefined,
+      courseExternalId: clean(row.courseExternalId) || undefined,
+    },
   };
-  if (lastDate) {
-    if (resolvedType === "lesson") item.startsAt = lastDate.toISOString();
-    else if (resolvedType !== "announcement") item.dueAt = lastDate.toISOString();
+  if (sourceDate?.iso) {
+    if (resolvedType === "lesson") item.startsAt = sourceDate.iso;
+    else if (resolvedType !== "announcement") item.dueAt = sourceDate.iso;
   }
   return item;
 }

@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { workerApiHeaders } from "../src/publish.mjs";
+import { boundedSyncPayload, workerApiHeaders } from "../src/publish.mjs";
 
 test("sends the Sites gate credential separately from the Jarvis worker token", async () => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "jarvis-sites-token-"));
@@ -26,4 +26,23 @@ test("sends the Sites gate credential separately from the Jarvis worker token", 
     else process.env.JARVIS_SITES_BYPASS_TOKEN = originalToken;
     await fs.rm(directory, { recursive: true, force: true });
   }
+});
+
+test("keeps sync payloads bounded while preserving school-file metadata", () => {
+  const payload = boundedSyncPayload({
+    source: "teams",
+    health: { state: "ready" },
+    items: Array.from({ length: 10 }, (_, index) => ({ title: `Assignment ${index}`, description: "x".repeat(400) })),
+    documents: Array.from({ length: 8 }, (_, index) => ({
+      name: `file-${index}.txt`,
+      storageKey: `teams/course/file-${index}.txt`,
+      checksum: "a".repeat(64),
+      extractedText: "lesson ".repeat(5_000),
+    })),
+    warnings: [],
+  }, 35_000);
+  assert.equal(Buffer.byteLength(JSON.stringify(payload), "utf8") <= 35_000, true);
+  assert.equal(payload.documents.length > 0, true);
+  assert.equal(payload.documents.every((document) => document.name && document.storageKey && document.checksum), true);
+  assert.equal(payload.warnings.includes("sync_payload_truncated"), true);
 });

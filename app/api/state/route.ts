@@ -18,6 +18,10 @@ export async function GET() {
       sources: [],
       projects: [],
       notes: [],
+      documents: [],
+      studyBlocks: [],
+      agentRuns: [],
+      improvementProposals: [],
       agentJobs: [],
       providers: [],
     };

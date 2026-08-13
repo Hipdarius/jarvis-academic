@@ -18,6 +18,7 @@ const base = {
   status: "inbox",
   evidence: "source_derived",
   confidence: 90,
+  sourceUrl: null,
 };
 
 test("does not promote undated announcements into the deadline queue", () => {

@@ -2,10 +2,11 @@ import { NextResponse } from "next/server";
 
 import { ingestWorkerSync, type WorkerSyncPayload } from "@/db/store";
 import { authenticateWorker } from "@/app/lib/worker-auth";
+import { isWorkerSyncPayload } from "@/packages/core/src/worker-payload";
 
 export const runtime = "edge";
 
-const allowedSources = new Set(["webuntis", "academy", "edumoodle", "teams"]);
+const maxPayloadBytes = 1_500_000;
 
 export async function POST(request: Request) {
   if (!await authenticateWorker(request)) {
@@ -13,12 +14,21 @@ export async function POST(request: Request) {
   }
 
   const declaredSize = Number(request.headers.get("content-length") ?? "0");
-  if (declaredSize > 1_500_000) {
+  if (declaredSize > maxPayloadBytes) {
     return NextResponse.json({ error: "Sync payload is too large." }, { status: 413 });
   }
 
-  const body = await request.json().catch(() => null) as WorkerSyncPayload | null;
-  if (!body || !allowedSources.has(body.source) || !body.health || !Array.isArray(body.items)) {
+  const rawBody = await request.text();
+  if (new TextEncoder().encode(rawBody).byteLength > maxPayloadBytes) {
+    return NextResponse.json({ error: "Sync payload is too large." }, { status: 413 });
+  }
+  let body: WorkerSyncPayload | null = null;
+  try {
+    body = JSON.parse(rawBody) as WorkerSyncPayload;
+  } catch {
+    body = null;
+  }
+  if (!isWorkerSyncPayload(body)) {
     return NextResponse.json({ error: "Invalid worker sync payload." }, { status: 400 });
   }
 

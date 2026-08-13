@@ -6,6 +6,7 @@ import {
   normalizeTeamsRows,
   normalizeWebUntisSections,
 } from "../src/normalization.mjs";
+import { parseSourceDate } from "../src/source-time.mjs";
 
 const reference = new Date("2026-09-18T12:00:00Z");
 
@@ -17,7 +18,9 @@ test("normalizes a WebUntis homework row without inventing a subject", () => {
   assert.equal(items.length, 1);
   assert.equal(items[0].type, "homework");
   assert.equal(items[0].subject, "Mathematics");
-  assert.equal(items[0].dueAt, "2026-09-22T23:59:00.000Z");
+  assert.equal(items[0].dueAt, undefined);
+  assert.equal(items[0].raw.dueLabel, "22.09.2026");
+  assert.equal(items[0].raw.duePrecision, "date");
   assert.equal(items[0].evidence, "source_derived");
 });
 
@@ -44,4 +47,36 @@ test("ignores Moodle course navigation but keeps assignment links", () => {
 test("does not turn an ordinary Teams channel into homework", () => {
   const items = normalizeTeamsRows([{ text: "General channel", href: "https://teams.microsoft.com/" }], reference);
   assert.deepEqual(items, []);
+});
+
+test("parses Moodle named dates in the Luxembourg timezone", () => {
+  const parsed = parseSourceDate("Opened: Tuesday, 23 September 2025, 6:55 PM Due: Tuesday, 30 September 2025, 8:00 PM", {
+    reference,
+    timeZone: "Europe/Luxembourg",
+  });
+  assert.deepEqual(parsed, {
+    label: "30 september 2025, 8:00 pm",
+    precision: "datetime",
+    iso: "2025-09-30T18:00:00.000Z",
+  });
+});
+
+test("converts numeric times without treating local time as UTC", () => {
+  const items = normalizeMoodleRows("academy", [{
+    text: "Database worksheet due 25.09.2026 18:30",
+    href: "https://academy.am.lu/mod/assign/view.php",
+    externalId: "assign:474:1001",
+    subject: "Database Systems",
+  }], reference);
+  assert.equal(items[0].sourceExternalId, "academy:assign:474:1001");
+  assert.equal(items[0].dueAt, "2026-09-25T16:30:00.000Z");
+  assert.equal(items[0].subject, "Database Systems");
+});
+
+test("does not guess the year when a source gives only day, month, and time", () => {
+  assert.deepEqual(parseSourceDate("Due 25.09 18:30", { reference }), {
+    label: "25.09 18:30",
+    precision: "partial_datetime",
+    iso: null,
+  });
 });

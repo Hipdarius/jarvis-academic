@@ -38,6 +38,7 @@ export interface NormalizedAcademicItem {
   sourceUrl?: string;
   evidence: EvidenceLevel;
   confidence: number;
+  status?: "inbox" | "planned" | "in_progress" | "done" | "cancelled";
   raw: unknown;
 }
 

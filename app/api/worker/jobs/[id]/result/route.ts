@@ -19,6 +19,8 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     error?: unknown;
     provider?: unknown;
     model?: unknown;
+    usage?: unknown;
+    durationMs?: unknown;
   } | null;
   const allowed = new Set(["succeeded", "failed", "needs_approval"]);
   if (!body || typeof body.status !== "string" || !allowed.has(body.status)) {
@@ -30,6 +32,10 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     error: typeof body.error === "string" ? body.error : null,
     provider: typeof body.provider === "string" ? body.provider : null,
     model: typeof body.model === "string" ? body.model : null,
+    usage: body.usage && typeof body.usage === "object" && !Array.isArray(body.usage)
+      ? body.usage as Record<string, unknown>
+      : null,
+    durationMs: typeof body.durationMs === "number" && Number.isFinite(body.durationMs) ? body.durationMs : null,
   });
   return NextResponse.json(result, { headers: { "Cache-Control": "no-store" } });
 }

@@ -14,6 +14,7 @@ export type DashboardItem = {
   status: "inbox" | "planned" | "in_progress" | "done" | "cancelled";
   evidence: EvidenceLevel;
   confidence: number;
+  sourceUrl: string | null;
 };
 
 export type DashboardSource = {
@@ -50,6 +51,61 @@ export type ProviderStatus = {
   role: string;
 };
 
+export type DashboardDocument = {
+  id: string;
+  name: string;
+  mimeType: string | null;
+  source: string;
+  subject: string;
+  academicItemId: string | null;
+  sourceUrl: string | null;
+  extracted: boolean;
+  createdAt: string;
+};
+
+export type DashboardStudyBlock = {
+  id: string;
+  academicItemId: string | null;
+  subject: string;
+  title: string;
+  scheduledFor: string;
+  durationMinutes: number;
+  reason: string;
+  status: "suggested" | "accepted" | "done" | "skipped";
+  generatedBy: "deterministic" | "agent" | "manual";
+};
+
+export type DashboardAgentRun = {
+  id: string;
+  trigger: string;
+  status: string;
+  objective: string;
+  usedJobs: number;
+  budgetJobs: number;
+  usedTokens: number;
+  budgetTokens: number;
+  summary: string | null;
+  createdAt: string;
+  messages: Array<{
+    id: string;
+    sender: string;
+    recipient: string;
+    kind: string;
+    content: string;
+    createdAt: string;
+  }>;
+};
+
+export type DashboardImprovementProposal = {
+  id: string;
+  title: string;
+  rationale: string;
+  status: string;
+  branchName: string | null;
+  implementationSummary: string | null;
+  createdAt: string;
+};
+
 export type DashboardState = {
   mode: "live" | "database_unavailable";
   generatedAt: string;
@@ -57,12 +113,20 @@ export type DashboardState = {
   sources: DashboardSource[];
   projects: DashboardProject[];
   notes: DashboardNote[];
+  documents: DashboardDocument[];
+  studyBlocks: DashboardStudyBlock[];
+  agentRuns: DashboardAgentRun[];
+  improvementProposals: DashboardImprovementProposal[];
   agentJobs: Array<{
     id: string;
     kind: string;
     status: string;
     provider: string | null;
     model: string | null;
+    runId: string | null;
+    agentRole: string;
+    prompt: string | null;
+    subject: string | null;
     result: string | null;
     error: string | null;
     createdAt: string;

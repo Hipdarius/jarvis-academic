@@ -37,7 +37,7 @@ services:
       JARVIS_IAM_PASSWORD_FILE: /run/secrets/iam_password
       JARVIS_DASHBOARD_URL: ${JARVIS_DASHBOARD_URL:-https://academic-jarvis.darius-ferent.chatgpt.site}
       JARVIS_WORKER_TOKEN_FILE: /run/secrets/worker_token
-      JARVIS_AGENT_AUTO_TRIAGE: ${JARVIS_AGENT_AUTO_TRIAGE:-false}
+      JARVIS_AGENT_AUTO_TRIAGE: ${JARVIS_AGENT_AUTO_TRIAGE:-true}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       JARVIS_OPENAI_AGENT_MODEL: ${JARVIS_OPENAI_AGENT_MODEL:-gpt-5.6-luna}
       JARVIS_HERMES_BASE_URL: ${JARVIS_HERMES_BASE_URL:-}

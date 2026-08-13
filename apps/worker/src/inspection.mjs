@@ -44,13 +44,26 @@ export async function inspectSession(page, source) {
   }).count().catch(() => 0);
   const identityTileVisible = await page.locator(identityEntryAttributeSelector).count().catch(() => 0)
     + await page.getByText(/^\s*IAM\s*$/i).count().catch(() => 0);
-  const authRequired = looksLikeLoginUrl(page.url()) || passwordVisible > 0 || usernameVisible > 0 || loginEntryVisible > 0 || identityTileVisible > 0;
+  const moodleLoggedOut = ["academy", "edumoodle"].includes(source.key)
+    && await page.locator("body.notloggedin").count().catch(() => 0) > 0;
+  const authRequired = moodleLoggedOut || looksLikeLoginUrl(page.url()) || passwordVisible > 0
+    || usernameVisible > 0 || loginEntryVisible > 0 || identityTileVisible > 0;
+
+  let state = authRequired ? "auth_required" : "ready";
+  let requiresUserAction = authRequired;
+  if (source.key === "teams" && !authRequired) {
+    const visibleText = redactText(await page.locator("body").innerText({ timeout: 2_000 }).catch(() => ""));
+    if (/we.ve run into an issue|there was a problem|something went wrong|browser.*not supported/i.test(visibleText)) {
+      state = "account_attention";
+      requiresUserAction = true;
+    }
+  }
 
   return {
     source: source.key,
     label: source.label,
-    state: authRequired ? "auth_required" : "ready",
-    requiresUserAction: authRequired,
+    state,
+    requiresUserAction,
     checkedAt: new Date().toISOString(),
     pageTitle: redactText(await page.title().catch(() => "")),
     url: redactUrl(page.url()),
@@ -59,7 +72,7 @@ export async function inspectSession(page, source) {
 
 export async function navigateToSource(page, source) {
   await page.goto(source.url, { waitUntil: "domcontentloaded", timeout: 45_000 });
-  await page.waitForTimeout(800);
+  await page.waitForTimeout(source.settleMs ?? 1_200);
   return inspectSession(page, source);
 }
 

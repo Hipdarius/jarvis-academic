@@ -7,11 +7,11 @@ tasks to the most appropriate configured provider.
 
 Live dashboard: <https://academic-jarvis.darius-ferent.chatgpt.site>
 
-## Current milestone: Phase 1 / Windows setup
+## Current milestone: Phase 2 / connected academic intelligence
 
 Implemented:
 
-- real D1-backed dashboard state—there are no sample assignments or fake source
+- real D1-backed dashboard state; there are no sample assignments or fake source
   heartbeats;
 - a compact Universal Command (`Ctrl/Cmd + K`) that understands homework,
   study sessions, knowledge notes, questions, and project ideas;
@@ -21,11 +21,19 @@ Implemented:
 - one-time dashboard-to-worker pairing tokens stored as hashes;
 - Playwright worker for WebUntis, Teams, academy.am.lu, and eduMoodle;
 - opt-in automatic IAM login using Windows DPAPI or a NAS Docker secret;
-- conservative source normalization: only recognizable school task/test rows are
-  published, and uncertain dates remain blank;
-- provider routing for triage, planning, research, and review jobs;
-- a persistent agent queue: dashboard questions and project ideas are claimed
-  by the HP/NAS worker and their results return to the Systems page;
+- conservative source normalization with stable IDs, provenance, Luxembourg
+  timezone handling, and intentionally blank uncertain dates;
+- explicit Teams attention states for login, MFA, account problems, and the
+  Education charter consent page;
+- bounded Teams and Moodle assignment-detail traversal plus protected local
+  indexing of teacher-provided files, checksums, and extractable text;
+- adaptive study suggestions built only from verified, dated school items;
+- subject workspaces with assignments, source files, study blocks, and
+  evidence-aware chat citations;
+- persistent, budgeted curator, planner, tutor, reviewer, and improver runs,
+  including visible handoffs and provider/token audit data;
+- optional code-agent branch preparation behind two independent approval
+  gates, with scope validation in a separate worktree;
 - root-level Windows setup and `jarvis` commands that never require navigating
   into `apps/worker`;
 - persistent local configuration, DPAPI IAM storage, a protected worker-token
@@ -34,8 +42,11 @@ Implemented:
 
 Still requires live-school validation:
 
-- each extractor must be calibrated against the authenticated 2026/27 pages;
-- Teams file download and document indexing are not implemented yet;
+- Teams must pass the one-time Education charter consent before its live
+  2026/27 assignment selectors and downloads can be calibrated;
+- eduMoodle still needs a successful headed login on this account;
+- every school portal can change markup, so failed selectors surface as
+  attention or partial extraction instead of invented records;
 - Samsung Notes ingestion is not available through a stable public API and
   needs a deliberate export/share workflow;
 - uploads and submissions remain disabled until an approval-and-receipt flow is
@@ -47,7 +58,7 @@ There are four separate credential classes:
 
 1. **IAM password:** stays on the HP or NAS worker. It is never stored in D1,
    sent to an AI model, printed in logs, or committed.
-2. **Worker token:** created in Jarvis → Systems, shown once, and stored locally.
+2. **Worker token:** created in Jarvis > Systems, shown once, and stored locally.
    D1 stores only its SHA-256 hash.
 3. **Sites bypass token:** passes the private Sites sign-in gate for worker API
    calls. Jarvis still verifies the separate worker token before accepting data.
@@ -57,8 +68,9 @@ There are four separate credential classes:
 Automatic password login is explicitly enabled with
 `JARVIS_ALLOW_PASSWORD_LOGIN=true`. Credentials are entered only on exact
 allowlisted IAM, Microsoft, LAM Academy, eduMoodle, and LAM WebUntis hosts. If a
-one-time code or authenticator prompt appears, the worker reports
-`mfa_required` instead of attempting to bypass it.
+one-time code, authenticator prompt, or legal consent appears, the worker
+reports an attention state instead of bypassing it. Jarvis never accepts a
+school charter or consent screen for you.
 
 Never commit browser profiles, cookies, passwords, API keys, pairing tokens,
 exported school files, or personal notes.
@@ -119,6 +131,38 @@ troubleshooting, headed mode pauses for you to complete MFA, consent, or an
 unfamiliar provider screen before it verifies the school page. Manual login
 is also available with `.\scripts\jarvis.ps1 login webuntis`.
 
+### Connect and sync the four school sources
+
+Run these commands from the repository root. The same persistent browser
+profile is reused, so completed logins survive normal worker restarts.
+
+1. In Jarvis > Systems, create a one-time worker token. Store it through the
+   hidden prompt with `.\scripts\jarvis.ps1 token`.
+2. Run `.\scripts\jarvis.ps1 credentials` and enter the IAM username and
+   password only in the native Windows credential dialog.
+3. Authenticate WebUntis with
+   `.\scripts\jarvis.ps1 auth webuntis -Headed`.
+4. Authenticate academy Moodle with
+   `.\scripts\jarvis.ps1 auth academy -Headed`.
+5. Authenticate Teams with `.\scripts\jarvis.ps1 auth teams -Headed`. Jarvis
+   enters the `@school.lu` email at Microsoft, follows the Education redirect,
+   and completes the IAM username/password steps. If the Education charter is
+   shown, read and accept it yourself, then return to PowerShell and press
+   Enter. Jarvis deliberately cannot accept legal consent.
+6. Authenticate eduMoodle with
+   `.\scripts\jarvis.ps1 auth edumoodle -Headed` and complete any unfamiliar
+   portal step in the visible browser.
+7. Verify and publish current data with:
+
+```powershell
+.\scripts\jarvis.ps1 health all
+.\scripts\jarvis.ps1 sync all
+```
+
+Refresh the dashboard after the sync completes. A source marked `Attention`
+needs another headed authentication pass; an empty healthy source means the
+extractor found no qualifying current records and does not fabricate any.
+
 Start the worker in the current terminal, or install a current-user Task
 Scheduler entry that starts at Windows sign-in:
 
@@ -132,6 +176,10 @@ Remove only the automatic-start task with `.\scripts\jarvis.ps1 uninstall`.
 This does not delete credentials, browser sessions, or school data. The daemon
 checks school sources every 30 minutes and the agent queue every 60 seconds by
 default.
+
+Real source changes queue one bounded curator -> planner -> reviewer run by
+default. Set `JARVIS_AGENT_AUTO_TRIAGE=false` in the private worker environment
+to keep synchronization running without proactive academic agents.
 
 Individual setup pieces can be repeated safely with
 `.\scripts\jarvis.ps1 credentials`, `.\scripts\jarvis.ps1 token`, and
@@ -199,6 +247,21 @@ source-sync cycle):
 Provider failures automatically fall through the configured route. Only
 normalized, redacted item fields are sent during automatic triage; IAM
 credentials and browser cookies never enter a model prompt.
+
+### Agent coordination and controlled improvements
+
+On each real sync change, Jarvis can run a bounded curator -> planner ->
+reviewer handoff. Subject chat uses a separate tutor run and cites the indexed
+assignment, document, and note records supplied to it. Systems shows every run,
+message, provider, model, budget, and result so autonomous work stays visible.
+
+Repeated connector warnings may create an improvement proposal. Nothing edits
+code until you confirm `Prepare branch` in Systems and set
+`JARVIS_AGENT_CODE_ENABLED=true` on the local worker. Even then the coder can
+only modify the approved file scope in a new `agent/*` worktree and cannot
+execute generated code, push, merge, deploy, or use IAM/browser secrets. Static
+diff checks run automatically; review and test that branch before merging it
+manually. A future OS-isolated runner can add automatic execution safely.
 
 ### Hermes Agent
 
