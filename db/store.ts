@@ -4,6 +4,10 @@ import type { CommandIntent } from "@/packages/core/src/command-router";
 import type { DashboardState, ProviderStatus } from "@/packages/core/src/dashboard";
 import type { NormalizedAcademicItem, SourceKind } from "@/packages/core/src/model";
 import { buildAdaptiveStudyBlocks } from "@/packages/core/src/study-planner";
+import {
+  suggestUploadDestination,
+  type UploadMatchCandidate,
+} from "@/packages/core/src/upload-matcher";
 import { getDb } from "./index";
 import {
   academicItems,
@@ -16,6 +20,7 @@ import {
   knowledgeNotes,
   projectCanvases,
   sources,
+  stagedUploads,
   studyBlocks,
   subjects,
   syncRuns,
@@ -163,7 +168,7 @@ function configuredProviders(): ProviderStatus[] {
 
 export async function readDashboardState(): Promise<DashboardState> {
   const db = getDb();
-  const [itemRows, sourceRows, projectRows, noteRows, jobRows, documentRows, blockRows, runRows, messageRows, proposalRows] = await Promise.all([
+  const [itemRows, sourceRows, projectRows, noteRows, jobRows, documentRows, uploadRows, blockRows, runRows, messageRows, proposalRows] = await Promise.all([
     db.select({
       item: academicItems,
       subjectName: subjects.name,
@@ -186,6 +191,18 @@ export async function readDashboardState(): Promise<DashboardState> {
       .leftJoin(sources, eq(documents.sourceId, sources.id))
       .leftJoin(subjects, eq(documents.subjectId, subjects.id))
       .orderBy(desc(documents.updatedAt))
+      .limit(100),
+    db.select({
+      upload: stagedUploads,
+      item: academicItems,
+      subjectName: subjects.name,
+      sourceName: sources.displayName,
+      sourceKind: sources.kind,
+    }).from(stagedUploads)
+      .leftJoin(academicItems, eq(stagedUploads.academicItemId, academicItems.id))
+      .leftJoin(subjects, eq(academicItems.subjectId, subjects.id))
+      .leftJoin(sources, eq(academicItems.sourceId, sources.id))
+      .orderBy(desc(stagedUploads.createdAt))
       .limit(100),
     db.select({
       block: studyBlocks,
@@ -270,6 +287,26 @@ export async function readDashboardState(): Promise<DashboardState> {
       extracted: Boolean(document.extractedText),
       createdAt: document.createdAt.toISOString(),
     })),
+    stagedUploads: uploadRows.map(({ upload, item, subjectName, sourceName, sourceKind }) => ({
+      id: upload.id,
+      name: upload.originalName,
+      mimeType: upload.mimeType,
+      sizeBytes: upload.sizeBytes,
+      checksum: upload.checksum,
+      status: upload.status,
+      matchConfidence: upload.matchConfidence,
+      matchReason: upload.matchReason,
+      createdAt: upload.createdAt.toISOString(),
+      destination: item && sourceKind ? {
+        academicItemId: item.id,
+        title: item.title,
+        subject: subjectName ?? "General",
+        source: sourceName ?? "School source",
+        sourceKind,
+        dueAt: iso(item.dueAt),
+        sourceUrl: item.sourceUrl,
+      } : null,
+    })),
     studyBlocks: blockRows.map(({ block, subjectName }) => ({
       id: block.id,
       academicItemId: block.academicItemId,
@@ -329,6 +366,113 @@ export async function readDashboardState(): Promise<DashboardState> {
     }),
     providers: configuredProviders(),
   };
+}
+
+async function activeSubmissionCandidates(): Promise<UploadMatchCandidate[]> {
+  const db = getDb();
+  const rows = await db.select({
+    item: academicItems,
+    subjectName: subjects.name,
+    sourceName: sources.displayName,
+    sourceKind: sources.kind,
+  }).from(academicItems)
+    .leftJoin(subjects, eq(academicItems.subjectId, subjects.id))
+    .innerJoin(sources, eq(academicItems.sourceId, sources.id))
+    .orderBy(asc(academicItems.dueAt))
+    .limit(300);
+  return rows.map(({ item, subjectName, sourceName, sourceKind }) => ({
+    id: item.id,
+    title: item.title,
+    description: item.description,
+    subject: subjectName ?? "General",
+    source: sourceName,
+    sourceKind,
+    type: item.type,
+    status: item.status,
+    dueAt: iso(item.dueAt),
+  })).filter((candidate) => (
+    ["teams", "academy_moodle", "edu_moodle"].includes(candidate.sourceKind)
+    && !["done", "cancelled"].includes(candidate.status)
+    && ["homework", "presentation", "deadline"].includes(candidate.type)
+  ));
+}
+
+export async function createStagedUpload(input: {
+  objectKey: string;
+  name: string;
+  mimeType: string;
+  sizeBytes: number;
+  checksum: string;
+  academicItemId?: string | null;
+}) {
+  const db = getDb();
+  const candidates = await activeSubmissionCandidates();
+  const selected = input.academicItemId
+    ? candidates.find((candidate) => candidate.id === input.academicItemId)
+    : null;
+  if (input.academicItemId && !selected) throw new Error("The selected destination is no longer available.");
+  const suggestion = selected
+    ? { academicItemId: selected.id, confidence: 100, reason: "Destination chosen by you." }
+    : suggestUploadDestination(input.name, candidates);
+  const id = `upload:${crypto.randomUUID()}`;
+  const now = new Date();
+  await db.insert(stagedUploads).values({
+    id,
+    objectKey: input.objectKey,
+    originalName: input.name.slice(0, 240),
+    mimeType: input.mimeType.slice(0, 120),
+    sizeBytes: input.sizeBytes,
+    checksum: input.checksum.toLowerCase(),
+    academicItemId: suggestion?.academicItemId ?? null,
+    matchConfidence: suggestion?.confidence ?? null,
+    matchReason: suggestion?.reason ?? null,
+    status: "staged",
+    createdAt: now,
+    updatedAt: now,
+  });
+  await db.insert(auditEvents).values({
+    id: crypto.randomUUID(),
+    action: "file_staged",
+    entityType: "staged_upload",
+    entityId: id,
+    actor: "user",
+    detailsJson: JSON.stringify({
+      academicItemId: suggestion?.academicItemId ?? null,
+      matchConfidence: suggestion?.confidence ?? null,
+      sizeBytes: input.sizeBytes,
+      checksumPrefix: input.checksum.slice(0, 12),
+    }),
+    createdAt: now,
+  }).catch(() => undefined);
+  return { id, match: suggestion ?? null };
+}
+
+export async function getStagedUploadFile(id: string) {
+  const db = getDb();
+  return (await db.select({
+    id: stagedUploads.id,
+    objectKey: stagedUploads.objectKey,
+    name: stagedUploads.originalName,
+    mimeType: stagedUploads.mimeType,
+    sizeBytes: stagedUploads.sizeBytes,
+  }).from(stagedUploads).where(eq(stagedUploads.id, id)).limit(1))[0] ?? null;
+}
+
+export async function deleteStagedUploadRecord(id: string) {
+  const db = getDb();
+  const existing = await getStagedUploadFile(id);
+  if (!existing) return null;
+  await db.delete(stagedUploads).where(eq(stagedUploads.id, id));
+  await db.insert(auditEvents).values({
+    id: crypto.randomUUID(),
+    action: "staged_file_deleted",
+    entityType: "staged_upload",
+    entityId: id,
+    actor: "user",
+    detailsJson: "{}",
+    createdAt: new Date(),
+  }).catch(() => undefined);
+  return existing;
 }
 
 function dueDateFromLabel(label: string | null) {

@@ -63,6 +63,27 @@ export type DashboardDocument = {
   createdAt: string;
 };
 
+export type DashboardStagedUpload = {
+  id: string;
+  name: string;
+  mimeType: string;
+  sizeBytes: number;
+  checksum: string;
+  status: "staged" | "ready_for_review" | "submitted" | "failed";
+  matchConfidence: number | null;
+  matchReason: string | null;
+  createdAt: string;
+  destination: {
+    academicItemId: string;
+    title: string;
+    subject: string;
+    source: string;
+    sourceKind: SourceKind;
+    dueAt: string | null;
+    sourceUrl: string | null;
+  } | null;
+};
+
 export type DashboardStudyBlock = {
   id: string;
   academicItemId: string | null;
@@ -114,6 +135,7 @@ export type DashboardState = {
   projects: DashboardProject[];
   notes: DashboardNote[];
   documents: DashboardDocument[];
+  stagedUploads: DashboardStagedUpload[];
   studyBlocks: DashboardStudyBlock[];
   agentRuns: DashboardAgentRun[];
   improvementProposals: DashboardImprovementProposal[];

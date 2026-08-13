@@ -19,6 +19,7 @@ export async function GET() {
       projects: [],
       notes: [],
       documents: [],
+      stagedUploads: [],
       studyBlocks: [],
       agentRuns: [],
       improvementProposals: [],

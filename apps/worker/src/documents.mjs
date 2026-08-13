@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { getDocument } from "pdfjs-dist/legacy/build/pdf.mjs";
 
 import { workerConfig } from "./config.mjs";
 import { redactText, redactUrl } from "./inspection.mjs";
@@ -65,18 +66,66 @@ function redactDocumentText(value) {
     .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, "[school-email]")
     .replace(/\b(?:Bearer\s+)?[A-Za-z0-9_-]{32,}\b/g, "[token]")
     .replace(/\b\d{7,}\b/g, "[identifier]")
-    .replace(/\s+/g, " ")
+    .replace(/\r/g, "")
+    .replace(/[\t\f\v ]+/g, " ")
+    .replace(/\n{3,}/g, "\n\n")
     .trim()
     .slice(0, 100_000);
 }
 
-function extractedText(buffer, mimeType, extension) {
+async function extractPdfText(buffer) {
+  const loadingTask = getDocument({
+    data: new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength),
+    disableFontFace: true,
+    isEvalSupported: false,
+    useSystemFonts: true,
+  });
+  try {
+    const pdf = await loadingTask.promise;
+    const pages = [];
+    let extractedLength = 0;
+    for (let pageNumber = 1; pageNumber <= Math.min(pdf.numPages, 250); pageNumber += 1) {
+      const page = await pdf.getPage(pageNumber);
+      const content = await page.getTextContent();
+      const text = content.items.map((item) => (
+        typeof item === "object" && "str" in item ? `${item.str}${item.hasEOL ? "\n" : " "}` : ""
+      )).join("");
+      if (text.trim()) {
+        const pageText = `[Page ${pageNumber}]\n${text.trim()}`;
+        pages.push(pageText);
+        extractedLength += pageText.length;
+      }
+      if (extractedLength >= 100_000) break;
+    }
+    return redactDocumentText(pages.join("\n\n")) || null;
+  } catch {
+    return null;
+  } finally {
+    await loadingTask.destroy().catch(() => undefined);
+  }
+}
+
+export async function extractDocumentText(buffer, mimeType, extension) {
+  if (mimeType === "application/pdf" || extension === ".pdf") return extractPdfText(buffer);
   if (!mimeType.startsWith("text/") && !textExtensions.has(extension)) return null;
   const decoded = buffer.subarray(0, 150_000).toString("utf8");
   const plain = /html|xml/i.test(mimeType) || [".htm", ".html", ".xml"].includes(extension)
     ? decoded.replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, " ").replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, " ").replace(/<[^>]+>/g, " ")
     : decoded;
   return redactDocumentText(plain) || null;
+}
+
+async function cachedExtractedText(absolutePath, buffer, mimeType, extension) {
+  const cachePath = `${absolutePath}.jarvis-text-v2.txt`;
+  try {
+    const cached = await fs.readFile(cachePath, "utf8");
+    return cached || null;
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
+  }
+  const extracted = await extractDocumentText(buffer, mimeType, extension);
+  await fs.writeFile(cachePath, extracted ?? "", { mode: 0o600 });
+  return extracted;
 }
 
 export async function downloadSchoolDocument(page, {
@@ -111,6 +160,7 @@ export async function downloadSchoolDocument(page, {
   const storedName = `${stem}-${checksum.slice(0, 10)}${extension}`;
   const absolutePath = path.join(directory, storedName);
   await fs.writeFile(absolutePath, body, { mode: 0o600 });
+  const text = await cachedExtractedText(absolutePath, body, mimeType, extension);
 
   return {
     state: "downloaded",
@@ -123,7 +173,7 @@ export async function downloadSchoolDocument(page, {
       storageKey: [...directoryParts, storedName].join("/"),
       checksum,
       sourceUrl: redactUrl(response.url()),
-      extractedText: extractedText(body, mimeType, extension),
+      extractedText: text,
       size: body.byteLength,
     },
   };

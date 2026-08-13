@@ -20,6 +20,7 @@
     "test": "node --test test/*.test.mjs"
   },
   "dependencies": {
+    "pdfjs-dist": "6.2.108",
     "playwright": "^1.55.1"
   }
 }

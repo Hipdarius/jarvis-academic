@@ -69,6 +69,23 @@ export const documents = sqliteTable("documents", {
   uniqueIndex("documents_source_external_unique").on(table.sourceId, table.storageKey),
 ]);
 
+export const stagedUploads = sqliteTable("staged_uploads", {
+  id: text("id").primaryKey(),
+  objectKey: text("object_key").notNull().unique(),
+  originalName: text("original_name").notNull(),
+  mimeType: text("mime_type").notNull(),
+  sizeBytes: integer("size_bytes").notNull(),
+  checksum: text("checksum").notNull(),
+  academicItemId: text("academic_item_id").references(() => academicItems.id),
+  matchConfidence: integer("match_confidence"),
+  matchReason: text("match_reason"),
+  status: text("status", {
+    enum: ["staged", "ready_for_review", "submitted", "failed"],
+  }).notNull().default("staged"),
+  createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+  updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
+});
+
 export const syncRuns = sqliteTable("sync_runs", {
   id: text("id").primaryKey(),
   sourceId: text("source_id").notNull().references(() => sources.id),

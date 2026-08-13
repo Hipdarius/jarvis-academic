@@ -13,8 +13,10 @@ import {
   Check,
   CheckCircle2,
   ClipboardCopy,
+  CloudUpload,
   Clock3,
   Database,
+  Download,
   FileText,
   FileCheck2,
   FolderKanban,
@@ -38,6 +40,7 @@ import {
   Settings2,
   ShieldCheck,
   Sparkles,
+  Trash2,
   Unplug,
   X,
   type LucideIcon,
@@ -154,6 +157,12 @@ function fileTypeLabel(mimeType: string | null) {
   return subtype.replace("vnd.openxmlformats-officedocument.", "").replaceAll("-", " ").toUpperCase();
 }
 
+function formatFileSize(sizeBytes: number) {
+  if (sizeBytes < 1_024) return `${sizeBytes} B`;
+  if (sizeBytes < 1_024 * 1_024) return `${Math.round(sizeBytes / 1_024)} KB`;
+  return `${(sizeBytes / (1_024 * 1_024)).toFixed(1)} MB`;
+}
+
 function sourceTone(status: DashboardSource["status"]) {
   if (status === "healthy") return "live";
   if (status === "error") return "error";
@@ -248,6 +257,14 @@ export default function Home() {
   const [studyPendingId, setStudyPendingId] = useState<string | null>(null);
   const [proposalConfirmId, setProposalConfirmId] = useState<string | null>(null);
   const [proposalPendingId, setProposalPendingId] = useState<string | null>(null);
+  const [uploadFile, setUploadFile] = useState<File | null>(null);
+  const [uploadTarget, setUploadTarget] = useState("");
+  const [uploadPending, setUploadPending] = useState(false);
+  const [uploadError, setUploadError] = useState("");
+  const [uploadNotice, setUploadNotice] = useState("");
+  const [uploadInputKey, setUploadInputKey] = useState(0);
+  const [uploadDeleteConfirmId, setUploadDeleteConfirmId] = useState<string | null>(null);
+  const [uploadDeletePendingId, setUploadDeletePendingId] = useState<string | null>(null);
 
   const loadState = useCallback(async (silent = false) => {
     if (!silent) setStateLoading(true);
@@ -329,6 +346,18 @@ export default function Home() {
 
   const activeStudyBlocks = useMemo(
     () => (state?.studyBlocks ?? []).filter((block) => block.status !== "done" && block.status !== "skipped"),
+    [state],
+  );
+  const submissionCandidates = useMemo(
+    () => (state?.items ?? []).filter((item) => (
+      ["teams", "academy_moodle", "edu_moodle"].includes(item.sourceKind)
+      && !["done", "cancelled"].includes(item.status)
+      && ["homework", "presentation", "deadline"].includes(item.type)
+    )).sort((first, second) => {
+      const firstTime = dashboardItemDate(first)?.getTime() ?? Number.MAX_SAFE_INTEGER;
+      const secondTime = dashboardItemDate(second)?.getTime() ?? Number.MAX_SAFE_INTEGER;
+      return firstTime - secondTime;
+    }),
     [state],
   );
 
@@ -462,6 +491,56 @@ export default function Home() {
       await loadState(true);
     } finally {
       setProposalPendingId(null);
+    }
+  }
+
+  async function stageUpload(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!uploadFile || uploadPending) return;
+    setUploadPending(true);
+    setUploadError("");
+    setUploadNotice("");
+    const form = new FormData();
+    form.set("file", uploadFile);
+    if (uploadTarget) form.set("academicItemId", uploadTarget);
+    try {
+      const response = await fetch("/api/uploads", { method: "POST", body: form });
+      const payload = await response.json() as {
+        error?: string;
+        match?: { confidence: number; reason: string } | null;
+      };
+      if (!response.ok) throw new Error(payload.error ?? "The file could not be staged.");
+      setUploadNotice(payload.match
+        ? `Staged privately. Destination match: ${payload.match.confidence}% confidence.`
+        : "Staged privately without a destination match.");
+      setUploadFile(null);
+      setUploadTarget("");
+      setUploadInputKey((value) => value + 1);
+      await loadState(true);
+    } catch (error) {
+      setUploadError(error instanceof Error ? error.message : "The file could not be staged.");
+    } finally {
+      setUploadPending(false);
+    }
+  }
+
+  async function deleteUpload(id: string) {
+    if (uploadDeleteConfirmId !== id) {
+      setUploadDeleteConfirmId(id);
+      return;
+    }
+    setUploadDeletePendingId(id);
+    setUploadError("");
+    try {
+      const response = await fetch(`/api/uploads/${encodeURIComponent(id)}`, { method: "DELETE" });
+      const payload = await response.json() as { error?: string };
+      if (!response.ok) throw new Error(payload.error ?? "The staged file could not be deleted.");
+      setUploadDeleteConfirmId(null);
+      await loadState(true);
+    } catch (error) {
+      setUploadError(error instanceof Error ? error.message : "The staged file could not be deleted.");
+    } finally {
+      setUploadDeletePendingId(null);
     }
   }
 
@@ -801,9 +880,73 @@ export default function Home() {
   function renderKnowledge() {
     const notes = state?.notes ?? [];
     const indexedDocuments = state?.documents ?? [];
+    const stagedUploads = state?.stagedUploads ?? [];
     return (
       <section className="collection-page">
-        <div className="page-heading"><div><p className="eyebrow">Captured and source-derived context</p><h1>Knowledge</h1><p>{notes.length} saved note{notes.length === 1 ? "" : "s"} and {indexedDocuments.length} indexed file{indexedDocuments.length === 1 ? "" : "s"}.</p></div><button className="primary-action" onClick={() => openCommand("Remember this: ")} type="button"><Plus size={17} />New note</button></div>
+        <div className="page-heading"><div><p className="eyebrow">Captured and source-derived context</p><h1>Knowledge</h1><p>{notes.length} note{notes.length === 1 ? "" : "s"}, {indexedDocuments.length} school file{indexedDocuments.length === 1 ? "" : "s"}, {stagedUploads.length} staged.</p></div><button className="primary-action" onClick={() => openCommand("Remember this: ")} type="button"><Plus size={17} />New note</button></div>
+
+        <section className="data-section upload-section">
+          <div className="section-heading compact">
+            <div><p className="eyebrow">Private object storage</p><h2>Submission staging</h2></div>
+            <span className="status-chip idle">staged only</span>
+          </div>
+          <form className="upload-form" onSubmit={(event) => void stageUpload(event)}>
+            <label className={`upload-picker ${uploadFile ? "selected" : ""}`}>
+              <CloudUpload size={20} />
+              <span><strong>{uploadFile?.name ?? "Choose a file"}</strong><small>{uploadFile ? formatFileSize(uploadFile.size) : "PDF, Office, image, text or ZIP / 25 MB max"}</small></span>
+              <input
+                accept=".pdf,.doc,.docx,.ppt,.pptx,.xls,.xlsx,.odt,.ods,.odp,.txt,.md,.csv,.png,.jpg,.jpeg,.webp,.zip"
+                key={uploadInputKey}
+                onChange={(event) => setUploadFile(event.target.files?.[0] ?? null)}
+                type="file"
+              />
+            </label>
+            <label className="upload-destination">
+              <span>Destination</span>
+              <select onChange={(event) => setUploadTarget(event.target.value)} value={uploadTarget}>
+                <option value="">Let Jarvis suggest a current assignment</option>
+                {submissionCandidates.map((item) => (
+                  <option key={item.id} value={item.id}>{item.subject} / {item.title} / {item.source}</option>
+                ))}
+              </select>
+            </label>
+            <button className="primary-action" disabled={!uploadFile || uploadPending} type="submit">
+              {uploadPending ? <LoaderCircle className="spin" size={17} /> : <CloudUpload size={17} />}
+              {uploadPending ? "Staging..." : "Stage file"}
+            </button>
+          </form>
+          {uploadNotice ? <p className="form-success" role="status"><CheckCircle2 size={15} />{uploadNotice} Nothing was sent to a school system.</p> : null}
+          {uploadError ? <p className="form-error" role="alert">{uploadError}</p> : null}
+          {stagedUploads.length ? (
+            <div className="staged-upload-list">
+              {stagedUploads.map((upload) => (
+                <article className="staged-upload-row" key={upload.id}>
+                  <span className="staged-file-icon"><FileCheck2 size={17} /></span>
+                  <div className="staged-file-main">
+                    <strong>{upload.name}</strong>
+                    <small>{formatFileSize(upload.sizeBytes)} / SHA-256 {upload.checksum.slice(0, 12)}</small>
+                    {upload.destination ? <p><span>{upload.destination.subject}</span>{upload.destination.title} / {upload.destination.source}{upload.matchConfidence ? ` / ${upload.matchConfidence}% match` : ""}</p> : <p>No current assignment match</p>}
+                  </div>
+                  <span className="status-chip idle">not submitted</span>
+                  <div className="staged-file-actions">
+                    <a aria-label={`Download ${upload.name}`} href={`/api/uploads/${encodeURIComponent(upload.id)}/file`} title="Download staged file"><Download size={16} /></a>
+                    <button
+                      aria-label={uploadDeleteConfirmId === upload.id ? `Confirm deletion of ${upload.name}` : `Delete ${upload.name}`}
+                      className={uploadDeleteConfirmId === upload.id ? "confirm" : ""}
+                      disabled={uploadDeletePendingId === upload.id}
+                      onClick={() => void deleteUpload(upload.id)}
+                      title={uploadDeleteConfirmId === upload.id ? "Confirm delete" : "Delete staged file"}
+                      type="button"
+                    >
+                      {uploadDeletePendingId === upload.id ? <LoaderCircle className="spin" size={16} /> : uploadDeleteConfirmId === upload.id ? <Check size={16} /> : <Trash2 size={16} />}
+                    </button>
+                  </div>
+                </article>
+              ))}
+            </div>
+          ) : <p className="section-empty-copy">No files are waiting for review.</p>}
+        </section>
+
         {notes.length ? (
           <div className="entity-grid">
             {notes.map((note) => (

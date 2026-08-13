@@ -26,7 +26,10 @@ Implemented:
 - explicit Teams attention states for login, MFA, account problems, and the
   Education charter consent page;
 - bounded Teams and Moodle assignment-detail traversal plus protected local
-  indexing of teacher-provided files, checksums, and extractable text;
+  indexing of teacher-provided files, checksums, plain text, and page-marked
+  text extraction from digital PDFs;
+- private dashboard file staging in R2 with format checks, SHA-256 integrity,
+  deterministic current-assignment suggestions, private download, and deletion;
 - adaptive study suggestions built only from verified, dated school items;
 - subject workspaces with assignments, source files, study blocks, and
   evidence-aware chat citations;
@@ -49,8 +52,9 @@ Still requires live-school validation:
   attention or partial extraction instead of invented records;
 - Samsung Notes ingestion is not available through a stable public API and
   needs a deliberate export/share workflow;
-- uploads and submissions remain disabled until an approval-and-receipt flow is
-  built and tested.
+- portal uploads and submissions remain disabled until a preview,
+  approval-and-receipt flow is built and tested; dashboard staging is live;
+- scanned-image PDF OCR and Office-document extraction are not implemented yet.
 
 ## Security model
 
@@ -180,6 +184,44 @@ default.
 Real source changes queue one bounded curator -> planner -> reviewer run by
 default. Set `JARVIS_AGENT_AUTO_TRIAGE=false` in the private worker environment
 to keep synchronization running without proactive academic agents.
+
+## How the worker and AI fit together
+
+The local Node worker is the orchestrator and credential boundary, not a single
+always-running model. Its main flow is:
+
+1. Playwright uses the persistent browser profile to read allowlisted school
+   sites. IAM credentials and cookies stay inside that local browser boundary.
+2. Source adapters turn visible WebUntis, Teams, and Moodle evidence into the
+   shared academic schema. Uncertain dates and assignments remain blank rather
+   than being guessed.
+3. Teacher files are downloaded into protected local storage, checksummed, and
+   text-extracted when supported. Digital PDF excerpts retain page markers.
+4. The worker publishes bounded records and excerpts to the private dashboard.
+   The original downloaded school-file bytes remain local.
+5. D1 queues bounded curator, planner, tutor, reviewer, improver, or coder jobs.
+   The worker claims each job and routes it through the configured provider
+   chain. Without an API key it returns a limited deterministic local result;
+   no hidden model runs on the laptop.
+
+OpenAI, Anthropic, Nous, OpenRouter, and an isolated OpenAI-compatible Hermes
+gateway are interchangeable provider routes. They receive only the evidence
+needed for a job, never the IAM password, browser cookies, or credential files.
+
+## Moodle and document coverage
+
+For each current Moodle course, the connector discovers structured activity
+modules, follows assignment details, reads due/submission rows, and downloads
+bounded course resources and teacher attachments from the same allowlisted
+Moodle host. Archived courses are deprioritized unless they contain recent
+work. Selector failures produce warnings and attention states instead of fake
+tasks.
+
+Digital PDFs can now be parsed locally into page-marked text for subject chat
+and agent citations. A scanned PDF can still contain no machine-readable text;
+OCR, diagrams, handwriting, and reliable DOCX/PPTX chapter extraction remain a
+separate document-intelligence step. The connector can download those files
+now, but Jarvis must not claim to understand content it did not extract.
 
 Individual setup pieces can be repeated safely with
 `.\scripts\jarvis.ps1 credentials`, `.\scripts\jarvis.ps1 token`, and
@@ -345,7 +387,9 @@ npm test
 
 ## School-action boundary
 
-Reading, indexing, planning, research, summaries, and draft generation may run
-automatically. Uploading or replacing assessed work, sending a message, or
-submitting to Teams/Moodle will require a clear preview, explicit confirmation,
-and a timestamped receipt. The worker currently performs no submissions.
+Reading, indexing, planning, research, summaries, draft generation, and private
+dashboard staging may run without changing a school system. Uploading or
+replacing assessed work, sending a message, or submitting to Teams/Moodle will
+require a clear preview, explicit action-time confirmation, post-action portal
+verification, and a timestamped receipt. The worker currently performs no
+school uploads or submissions.
