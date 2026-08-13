@@ -1,0 +1,25 @@
+{
+  "name": "@academic-jarvis/iam-worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "scripts": {
+    "login": "node src/cli.mjs login",
+    "auth": "node src/cli.mjs auth",
+    "setup:iam": "powershell -ExecutionPolicy Bypass -File scripts/setup-iam-credentials.ps1",
+    "health": "node src/cli.mjs health",
+    "sync": "node src/cli.mjs sync",
+    "providers": "node src/cli.mjs providers",
+    "doctor": "node src/cli.mjs doctor",
+    "agent": "node src/cli.mjs agent",
+    "jobs": "node src/cli.mjs jobs",
+    "daemon": "node src/cli.mjs daemon",
+    "test": "node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "playwright": "^1.55.1"
+  }
+}

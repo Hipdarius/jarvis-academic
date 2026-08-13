@@ -1,0 +1,87 @@
+name: academic-jarvis
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-jarvis}
+      POSTGRES_USER: ${POSTGRES_USER:-jarvis}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in the NAS project environment}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks: [backend]
+
+  worker:
+    profiles: ["nas-worker"]
+    build:
+      context: .
+      dockerfile: apps/worker/Dockerfile
+    restart: unless-stopped
+    init: true
+    shm_size: "1gb"
+    environment:
+      JARVIS_TIMEZONE: ${JARVIS_TIMEZONE:-Europe/Luxembourg}
+      JARVIS_SYNC_INTERVAL_MINUTES: ${JARVIS_SYNC_INTERVAL_MINUTES:-30}
+      JARVIS_AGENT_POLL_SECONDS: ${JARVIS_AGENT_POLL_SECONDS:-60}
+      JARVIS_BROWSER_PROFILE_DIR: /data/browser-profile
+      JARVIS_STATE_DIR: /data/work
+      JARVIS_SCHOOL_FILES_DIR: /data/school-files
+      JARVIS_ALLOW_PASSWORD_LOGIN: ${JARVIS_ALLOW_PASSWORD_LOGIN:-false}
+      JARVIS_IAM_USERNAME: ${JARVIS_IAM_USERNAME:-}
+      JARVIS_IAM_PASSWORD_FILE: /run/secrets/iam_password
+      JARVIS_DASHBOARD_URL: ${JARVIS_DASHBOARD_URL:-https://academic-jarvis.darius-ferent.chatgpt.site}
+      JARVIS_WORKER_TOKEN_FILE: /run/secrets/worker_token
+      JARVIS_AGENT_AUTO_TRIAGE: ${JARVIS_AGENT_AUTO_TRIAGE:-false}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      JARVIS_OPENAI_AGENT_MODEL: ${JARVIS_OPENAI_AGENT_MODEL:-gpt-5.6-luna}
+      JARVIS_HERMES_BASE_URL: ${JARVIS_HERMES_BASE_URL:-}
+      JARVIS_HERMES_API_KEY: ${JARVIS_HERMES_API_KEY:-}
+      JARVIS_HERMES_MODEL: ${JARVIS_HERMES_MODEL:-hermes-agent}
+      NOUS_API_KEY: ${NOUS_API_KEY:-}
+      NOUS_MODEL: ${NOUS_MODEL:-}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      OPENROUTER_MODEL: ${OPENROUTER_MODEL:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-}
+      JARVIS_AGENT_ROUTE_TRIAGE: ${JARVIS_AGENT_ROUTE_TRIAGE:-nous,openrouter,openai,hermes}
+      JARVIS_AGENT_ROUTE_PLANNING: ${JARVIS_AGENT_ROUTE_PLANNING:-openai,anthropic,hermes,openrouter,nous}
+      JARVIS_AGENT_ROUTE_REVIEW: ${JARVIS_AGENT_ROUTE_REVIEW:-anthropic,openai,hermes,openrouter}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-jarvis}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-jarvis}
+      WEBUNTIS_BASE_URL: https://lam.webuntis.com/WebUntis/
+      ACADEMY_MOODLE_BASE_URL: https://academy.am.lu/
+      EDU_MOODLE_BASE_URL: https://ssl.education.lu/eduMoodle/
+      TEAMS_BASE_URL: https://teams.microsoft.com/
+    volumes:
+      - browser-profile:/data/browser-profile
+      - school-files:/data/school-files
+      - worker-state:/data/work
+    secrets:
+      - iam_password
+      - worker_token
+    networks: [backend, egress]
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+networks:
+  backend:
+    internal: true
+  egress:
+
+volumes:
+  postgres-data:
+  browser-profile:
+  school-files:
+  worker-state:
+
+secrets:
+  iam_password:
+    file: ${JARVIS_IAM_PASSWORD_SECRET_FILE:-./secrets/iam_password}
+  worker_token:
+    file: ${JARVIS_WORKER_TOKEN_SECRET_FILE:-./secrets/worker_token}
