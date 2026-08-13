@@ -441,7 +441,7 @@ export default function Home() {
             <span className="system-icon purple"><KeyRound size={21} /></span><span className="eyebrow">WORKER PAIRING</span><h2>Connect the HP or Synology</h2>
             <p>Create a one-time token, save it locally as the worker secret, then run the browser worker. The token can publish normalized items; it cannot read your IAM password.</p>
             {pairToken ? <div className="token-box"><code>{pairToken}</code><button aria-label="Copy worker token" onClick={() => void copyPairToken()} type="button">{copied ? <Check size={16} /> : <ClipboardCopy size={16} />}</button></div> : <button className="primary-system-action" disabled={pairPending} onClick={() => void createPairToken()} type="button">{pairPending ? <LoaderCircle className="spin" size={16} /> : <KeyRound size={16} />}{pairPending ? "Creating…" : "Create one-time worker token"}</button>}
-            {pairToken ? <p className="token-warning">Shown once. Put it in <code>secrets/worker_token</code>; do not paste it into chat or GitHub.</p> : null}
+            {pairToken ? <p className="token-warning">Shown once. Save it with <code>.\scripts\jarvis.ps1 token</code>; do not paste it into chat or GitHub.</p> : null}
             {pairError ? <p className="command-error">{pairError}</p> : null}
           </article>
         </div>
@@ -473,7 +473,7 @@ export default function Home() {
           ) : <div className="micro-empty">Questions and project research jobs will appear here after Universal Command queues them.</div>}
         </section>
 
-        <article className="system-card command-line-card"><span className="eyebrow">LOCAL SETUP</span><h2>Run these steps on the HP</h2><div className="setup-steps"><div><span>1</span><code>cd apps/worker &amp;&amp; npm install</code></div><div><span>2</span><code>npm run setup:iam</code></div><div><span>3</span><code>set JARVIS_ALLOW_PASSWORD_LOGIN=true</code></div><div><span>4</span><code>npm run auth -- all</code></div><div><span>5</span><code>npm run daemon</code></div></div><p>The setup command opens a native Windows credential prompt. Never type the password into Universal Command.</p></article>
+        <article className="system-card command-line-card"><span className="eyebrow">LOCAL SETUP</span><h2>Run these steps from the repository root</h2><div className="setup-steps"><div><span>1</span><code>.\scripts\setup-windows.ps1</code></div><div><span>2</span><code>.\scripts\jarvis.ps1 doctor</code></div><div><span>3</span><code>.\scripts\jarvis.ps1 auth webuntis -Headed</code></div><div><span>4</span><code>.\scripts\jarvis.ps1 health all</code></div><div><span>5</span><code>.\scripts\jarvis.ps1 install</code></div></div><p>Setup uses native protected prompts for IAM credentials and the worker token. Never type either into Universal Command.</p></article>
       </section>
     );
   }

@@ -28,4 +28,6 @@ test("IAM credentials are restricted to known identity hosts", () => {
   assert.equal(isAllowedCredentialHost("https://lam.webuntis.com/WebUntis/"), true);
   assert.equal(isAllowedCredentialHost("https://example.com/fake-iam"), false);
   assert.equal(isAllowedCredentialHost("https://iam.education.lu.example.com/login"), false);
+  assert.equal(isAllowedCredentialHost("https://signin.iam.education.lu/login"), false);
+  assert.equal(isAllowedCredentialHost("https://login.microsoftonline.com.evil.example/tenant"), false);
 });

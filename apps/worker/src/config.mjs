@@ -2,7 +2,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-const repositoryRoot = fileURLToPath(new URL("../../../", import.meta.url));
+export const repositoryRoot = fileURLToPath(new URL("../../../", import.meta.url));
 
 function httpsUrl(name, fallback) {
   const value = process.env[name] || fallback;

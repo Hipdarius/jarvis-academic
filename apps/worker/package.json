@@ -7,16 +7,16 @@
     "node": ">=22.13.0"
   },
   "scripts": {
-    "login": "node src/cli.mjs login",
-    "auth": "node src/cli.mjs auth",
+    "login": "node src/entry.mjs login",
+    "auth": "node src/entry.mjs auth",
     "setup:iam": "powershell -ExecutionPolicy Bypass -File scripts/setup-iam-credentials.ps1",
-    "health": "node src/cli.mjs health",
-    "sync": "node src/cli.mjs sync",
-    "providers": "node src/cli.mjs providers",
-    "doctor": "node src/cli.mjs doctor",
-    "agent": "node src/cli.mjs agent",
-    "jobs": "node src/cli.mjs jobs",
-    "daemon": "node src/cli.mjs daemon",
+    "health": "node src/entry.mjs health",
+    "sync": "node src/entry.mjs sync",
+    "providers": "node src/entry.mjs providers",
+    "doctor": "node src/entry.mjs doctor",
+    "agent": "node src/entry.mjs agent",
+    "jobs": "node src/entry.mjs jobs",
+    "daemon": "node src/entry.mjs daemon",
     "test": "node --test test/*.test.mjs"
   },
   "dependencies": {

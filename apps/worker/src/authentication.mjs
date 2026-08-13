@@ -12,7 +12,7 @@ const credentialHosts = [
 export function isAllowedCredentialHost(value) {
   try {
     const host = new URL(value).hostname.toLowerCase();
-    return credentialHosts.some((allowed) => host === allowed || host.endsWith(`.${allowed}`));
+    return credentialHosts.includes(host);
   } catch {
     return false;
   }

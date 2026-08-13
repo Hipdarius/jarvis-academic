@@ -7,7 +7,7 @@ tasks to the most appropriate configured provider.
 
 Live dashboard: <https://academic-jarvis.darius-ferent.chatgpt.site>
 
-## Current milestone: Phase 1
+## Current milestone: Phase 1 / Windows setup
 
 Implemented:
 
@@ -26,6 +26,10 @@ Implemented:
 - provider routing for triage, planning, research, and review jobs;
 - a persistent agent queue: dashboard questions and project ideas are claimed
   by the HP/NAS worker and their results return to the Systems page;
+- root-level Windows setup and `jarvis` commands that never require navigating
+  into `apps/worker`;
+- persistent local configuration, DPAPI IAM storage, a protected worker-token
+  file, headed authentication troubleshooting, and an optional logon task;
 - Synology DS1522+ Compose foundation and ignored secret files.
 
 Still requires live-school validation:
@@ -57,68 +61,70 @@ one-time code or authenticator prompt appears, the worker reports
 Never commit browser profiles, cookies, passwords, API keys, pairing tokens,
 exported school files, or personal notes.
 
-## Fastest setup on the HP laptop
+## Windows setup on the HP laptop
 
 Requirements: Node.js 22.13+, Git, and PowerShell.
 
 ```powershell
 git clone https://github.com/Hipdarius/jarvis-academic.git
-cd jarvis-academic\apps\worker
-npm install
-npx playwright install chromium
-npm run doctor
-npm run setup:iam
-$env:JARVIS_ALLOW_PASSWORD_LOGIN = "true"
-npm run auth -- all
+cd jarvis-academic
+.\scripts\setup-windows.ps1
 ```
 
-If `cd jarvis-academic\apps\worker` fails, you are in an old or different
-folder. From the repository root, `Get-ChildItem` should show both `app` and
-`apps`, and `Get-ChildItem .\apps\worker` should show `package.json`, `src`,
-`scripts`, and `test`.
+The setup script finds the repository root itself, verifies Node, installs the
+worker and Playwright Chromium, creates private folders, opens the native
+Windows IAM credential prompt, and accepts the one-time worker token through a
+hidden prompt. Create that token first in Jarvis > Systems. Do not put the IAM
+password or worker token on a command line.
 
-`npm run setup:iam` opens a native Windows credential dialog and encrypts the
-password with DPAPI for the current Windows user. Do not type the password into
-Universal Command, an `.env` file, GitHub, or chat.
+Local files are kept under `%LOCALAPPDATA%\AcademicJarvis` by default:
 
-Next, open Jarvis → Systems, create a worker token, and save it locally. For a
-PowerShell test session:
+- `worker.env` contains non-secret paths and settings;
+- `iam-credential.dpapi.json` contains the Windows-user-bound DPAPI cipher;
+- `worker_token` contains the dashboard pairing token with a user-only ACL;
+- `browser-profile`, `school-files`, `work`, and `logs` contain runtime data.
+
+Run the diagnostic from the repository root at any time:
 
 ```powershell
-$env:JARVIS_DASHBOARD_URL = "https://academic-jarvis.darius-ferent.chatgpt.site"
-$env:JARVIS_WORKER_TOKEN = "the-token-shown-by-jarvis"
-npm run sync -- webuntis
-npm run sync -- all
+.\scripts\jarvis.ps1 doctor
 ```
 
-Use a protected token file for continuous operation instead of a long-lived
-environment variable. The daemon checks all four sources at the configured
-interval:
+The diagnostic checks Node 22.13+, installed dependencies, the actual Chromium
+executable, private folders, dashboard/token/IAM configuration, AI-provider
+availability, and public reachability for the dashboard and four school entry
+points. It prints only status and paths, never secret values.
+
+Bootstrap WebUntis in a visible browser so MFA or an unfamiliar page can be
+completed safely:
 
 ```powershell
-$env:JARVIS_WORKER_TOKEN_FILE = "$env:LOCALAPPDATA\AcademicJarvis\worker_token"
-$env:JARVIS_SYNC_INTERVAL_MINUTES = "30"
-npm run daemon
+.\scripts\jarvis.ps1 auth webuntis -Headed
+.\scripts\jarvis.ps1 health all
+.\scripts\jarvis.ps1 sync webuntis
 ```
 
-The daemon checks the lightweight agent queue every 60 seconds by default while
-school-source scans remain on the slower sync interval.
+If automatic authentication needs troubleshooting, the visible window uses the
+same exact-host allowlist as headless mode and stops for MFA. Manual login is
+also available with `.\scripts\jarvis.ps1 login webuntis`.
 
-Manual browser login remains available for troubleshooting:
+Start the worker in the current terminal, or install a current-user Task
+Scheduler entry that starts at Windows sign-in:
 
 ```powershell
-npm run login -- webuntis
-npm run health -- all
+.\scripts\jarvis.ps1 start
+.\scripts\jarvis.ps1 install
+.\scripts\jarvis.ps1 status
 ```
 
-Run `npm run doctor` any time the worker setup feels wrong. It reports whether
-you are in the worker folder, whether Node is new enough, whether the dashboard
-URL and worker token are configured, whether IAM automatic login is enabled, and
-which AI providers are available. It never prints passwords, API keys, or the
-worker token value.
+Remove only the automatic-start task with `.\scripts\jarvis.ps1 uninstall`.
+This does not delete credentials, browser sessions, or school data. The daemon
+checks school sources every 30 minutes and the agent queue every 60 seconds by
+default.
 
-Worker data is written under the ignored `work/` directory by default. Stored
-URLs lose query strings and fragments; common email, token, and long identifier
+Individual setup pieces can be repeated safely with
+`.\scripts\jarvis.ps1 credentials` and `.\scripts\jarvis.ps1 token`. Stored URLs
+lose query strings and fragments; common email, token, and long identifier
 patterns are redacted.
 
 ## Connect AI providers
@@ -157,24 +163,25 @@ $env:OPENROUTER_API_KEY_FILE = "$env:LOCALAPPDATA\AcademicJarvis\openrouter_key"
 $env:ANTHROPIC_API_KEY_FILE = "$env:LOCALAPPDATA\AcademicJarvis\anthropic_key"
 ```
 
-Check configuration without sending school content:
+The Windows worker loads `%LOCALAPPDATA%\AcademicJarvis\worker.env`
+automatically. Put only key-file paths there, then keep each key in its own
+user-protected local file. Check configuration without sending school content:
 
-```bash
-cd apps/worker
-npm run providers
+```powershell
+.\scripts\jarvis.ps1 providers
 ```
 
 Run one bounded task:
 
-```bash
-npm run agent -- planning "Build a study sequence from these confirmed topics: ..."
+```powershell
+.\scripts\jarvis.ps1 agent planning "Build a study sequence from these confirmed topics: ..."
 ```
 
 Process queued dashboard jobs immediately (the daemon also does this after each
 source-sync cycle):
 
-```bash
-npm run jobs
+```powershell
+.\scripts\jarvis.ps1 jobs
 ```
 
 Provider failures automatically fall through the configured route. Only
@@ -241,12 +248,22 @@ compose.yaml               Synology runtime
 secrets/                   Ignored local secret files
 ```
 
+## GitHub and hosted deployment
+
+`origin` (`Hipdarius/jarvis-academic`) is the authoritative GitHub source. The
+ChatGPT Site has a separate source repository and deployment version, so a
+GitHub push does not by itself redeploy the dashboard. For each release, verify
+that the GitHub commit and deployed Sites checkpoint have the same source tree,
+then confirm the live URL reports a successful deployment. Keep the prior
+working Site version available for rollback.
+
 ## Development and verification
 
 ```bash
 npm install
 npm run lint
 npm run test:router
+npm run test:setup
 npm --prefix apps/worker test
 npm test
 ```

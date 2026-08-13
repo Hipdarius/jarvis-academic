@@ -2,10 +2,11 @@
 
 import path from "node:path";
 import process from "node:process";
+import { constants as fsConstants } from "node:fs";
 import fs from "node:fs/promises";
 import { createInterface } from "node:readline/promises";
 
-import { requireSource, sourceKeys, sources, workerConfig } from "./config.mjs";
+import { repositoryRoot, requireSource, sourceKeys, sources, workerConfig } from "./config.mjs";
 import { ensureAuthenticated } from "./authentication.mjs";
 import { credentialStatus, loadIamCredentials } from "./credentials.mjs";
 import { inspectSession, navigateToSource } from "./inspection.mjs";
@@ -21,7 +22,7 @@ function usage() {
 
 Usage:
   npm run login -- <webuntis|academy|edumoodle|teams>
-  npm run auth -- <source|all>
+  npm run auth -- <source|all> [--headed]
   npm run health -- <source|all>
   npm run sync -- <source|all>
   npm run providers
@@ -44,19 +45,77 @@ async function exists(file) {
   }
 }
 
-function check(name, ok, detail) {
-  return { name, ok: Boolean(ok), detail };
+function check(name, ok, detail, required = true) {
+  return { name, ok: Boolean(ok), detail, required };
 }
 
-async function doctor() {
-  const workerPackage = path.join(process.cwd(), "package.json");
-  const inWorker = await exists(workerPackage);
-  const credentials = await credentialStatus().catch((error) => ({
-    enabled: false,
-    storage: null,
-    error: error instanceof Error ? error.message : String(error),
-  }));
-  const providers = await providerStatus().catch((error) => ({ error: error instanceof Error ? error.message : String(error) }));
+function supportedNodeVersion() {
+  const [major, minor] = process.versions.node.split(".").map((value) => Number.parseInt(value, 10));
+  return major > 22 || (major === 22 && minor >= 13);
+}
+
+async function directoryStatus(directory) {
+  try {
+    await fs.access(directory, fsConstants.W_OK);
+    return { ok: true, detail: directory };
+  } catch {
+    return { ok: false, detail: `${directory} (missing or not writable)` };
+  }
+}
+
+async function playwrightStatus() {
+  try {
+    const { chromium } = await import("playwright");
+    const executable = chromium.executablePath();
+    await fs.access(executable);
+    return { ok: true, detail: executable };
+  } catch (error) {
+    return {
+      ok: false,
+      detail: `Run the Windows setup or npx playwright install chromium. ${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
+}
+
+async function reachabilityCheck(name, url) {
+  try {
+    const response = await fetch(url, {
+      method: "HEAD",
+      redirect: "follow",
+      signal: AbortSignal.timeout(10_000),
+    });
+    return check(`${name} reachability`, response.status < 500, `HTTP ${response.status} at ${new URL(response.url).origin}`);
+  } catch (error) {
+    return check(`${name} reachability`, false, error instanceof Error ? error.message : String(error));
+  }
+}
+
+function printDoctor(report) {
+  console.log("Academic Jarvis doctor\n");
+  for (const item of report.report) {
+    const marker = item.ok ? "OK" : item.required ? "FAIL" : "WARN";
+    console.log(`[${marker}] ${item.name}: ${item.detail}`);
+  }
+  console.log(`\n${report.ok ? "Ready for worker commands." : "Setup is incomplete. Fix the FAIL items above."}`);
+}
+
+async function doctor({ network = true, json = false } = {}) {
+  const workerPackage = path.join(repositoryRoot, "apps", "worker", "package.json");
+  const dependencyPackage = path.join(repositoryRoot, "apps", "worker", "node_modules", "playwright", "package.json");
+  const configFile = process.env.JARVIS_CONFIG_FILE;
+  const [credentials, providers, token, playwright, stateDirectory, profileDirectory, schoolFilesDirectory] = await Promise.all([
+    credentialStatus().catch((error) => ({
+      enabled: false,
+      storage: null,
+      error: error instanceof Error ? error.message : String(error),
+    })),
+    providerStatus().catch((error) => ({ error: error instanceof Error ? error.message : String(error) })),
+    readWorkerToken().catch(() => null),
+    playwrightStatus(),
+    directoryStatus(workerConfig.stateDirectory),
+    directoryStatus(workerConfig.profileDirectory),
+    directoryStatus(workerConfig.schoolFilesDirectory),
+  ]);
   const dashboard = (() => {
     try {
       return dashboardUrl();
@@ -64,21 +123,34 @@ async function doctor() {
       return error instanceof Error ? error.message : String(error);
     }
   })();
-  const token = await readWorkerToken().catch(() => null);
-
   const report = [
-    check("worker folder", inWorker, inWorker ? process.cwd() : "Run from apps/worker."),
-    check("node version", Number(process.versions.node.split(".")[0]) >= 22, process.version),
+    check("repository", await exists(workerPackage), repositoryRoot),
+    check("persistent config", Boolean(configFile && await exists(configFile)), configFile || "Run .\\scripts\\setup-windows.ps1.", process.platform === "win32"),
+    check("node version", supportedNodeVersion(), `${process.version} (requires 22.13 or newer)`),
+    check("worker dependencies", await exists(dependencyPackage), await exists(dependencyPackage) ? "installed" : "Run .\\scripts\\setup-windows.ps1."),
+    check("Playwright Chromium", playwright.ok, playwright.detail),
     check("dashboard url", Boolean(dashboard && !String(dashboard).includes("must use HTTPS")), dashboard ?? "Set JARVIS_DASHBOARD_URL."),
     check("worker token", Boolean(token), token ? "configured" : "Set JARVIS_WORKER_TOKEN_FILE or JARVIS_WORKER_TOKEN."),
-    check("password login opt-in", process.env.JARVIS_ALLOW_PASSWORD_LOGIN === "true", "Set JARVIS_ALLOW_PASSWORD_LOGIN=true before npm run auth."),
-    check("iam credentials", credentials.enabled, credentials.error ?? (credentials.storage ? `configured via ${credentials.storage}` : "Run npm run setup:iam on Windows or mount the NAS secret.")),
-    check("state directory", true, workerConfig.stateDirectory),
-    check("browser profile", true, workerConfig.profileDirectory),
-    check("ai providers", Array.isArray(providers) && providers.some((provider) => provider.configured), Array.isArray(providers) ? providers.map((provider) => `${provider.id}:${provider.configured ? provider.model : "off"}`).join(", ") : providers.error),
+    check("password login opt-in", process.env.JARVIS_ALLOW_PASSWORD_LOGIN === "true", "Run setup or set JARVIS_ALLOW_PASSWORD_LOGIN=true."),
+    check("iam credentials", credentials.enabled, credentials.error ?? (credentials.storage ? `configured via ${credentials.storage}` : "Run .\\scripts\\jarvis.ps1 credentials.")),
+    check("state directory", stateDirectory.ok, stateDirectory.detail),
+    check("browser profile", profileDirectory.ok, profileDirectory.detail),
+    check("school files", schoolFilesDirectory.ok, schoolFilesDirectory.detail),
+    check("ai providers", Array.isArray(providers) && providers.some((provider) => provider.configured), Array.isArray(providers) ? providers.map((provider) => `${provider.id}:${provider.configured ? provider.model : "off"}`).join(", ") : providers.error, false),
   ];
 
-  console.log(JSON.stringify({ ok: report.every((item) => item.ok), report }, null, 2));
+  if (network) {
+    const probes = await Promise.all([
+      dashboard ? reachabilityCheck("dashboard", dashboard) : Promise.resolve(check("dashboard reachability", false, "Dashboard URL is not configured.")),
+      ...sourceKeys.map((key) => reachabilityCheck(sources[key].label, sources[key].url)),
+    ]);
+    report.push(...probes);
+  }
+
+  const result = { ok: report.every((item) => !item.required || item.ok), report };
+  if (json) console.log(JSON.stringify(result, null, 2));
+  else printDoctor(result);
+  if (!result.ok) process.exitCode = 2;
 }
 
 function targets(value = "all") {
@@ -126,13 +198,13 @@ async function checkHealth(source) {
   return result;
 }
 
-async function authenticate(target) {
+async function authenticate(target, { headless = true } = {}) {
   const credentials = await loadIamCredentials();
   if (!credentials) {
     throw new Error("Password login is not configured. Run npm run setup:iam on Windows or mount the NAS IAM secret file.");
   }
   for (const source of targets(target)) {
-    const result = await withBrowser(true, (page) => ensureAuthenticated(page, source, credentials));
+    const result = await withBrowser(headless, (page) => ensureAuthenticated(page, source, credentials));
     await writeJson(path.join(workerConfig.stateDirectory, "health", `${source.key}.json`), result);
     console.log(JSON.stringify(result, null, 2));
   }
@@ -254,15 +326,18 @@ async function daemon() {
   console.log("Jarvis worker stopped cleanly.");
 }
 
-const [command, target, ...rest] = process.argv.slice(2);
+const rawArguments = process.argv.slice(2);
+const command = rawArguments.shift();
+const flags = new Set(rawArguments.filter((value) => value.startsWith("--")));
+const [target, ...rest] = rawArguments.filter((value) => !value.startsWith("--"));
 
 try {
   if (command === "login") await login(target);
-  else if (command === "auth") await authenticate(target || "all");
+  else if (command === "auth") await authenticate(target || "all", { headless: !flags.has("--headed") });
   else if (command === "health") await health(target || "all");
   else if (command === "sync") await sync(target || "all");
   else if (command === "providers") console.log(JSON.stringify(await providerStatus(), null, 2));
-  else if (command === "doctor") await doctor();
+  else if (command === "doctor") await doctor({ network: !flags.has("--offline"), json: flags.has("--json") });
   else if (command === "agent") await runAgent(target || "planning", rest);
   else if (command === "jobs") console.log(JSON.stringify(await drainAgentJobs(10), null, 2));
   else if (command === "daemon") await daemon();
