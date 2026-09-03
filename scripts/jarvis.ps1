@@ -27,6 +27,7 @@ Academic Jarvis commands (run from any folder)
   .\scripts\jarvis.ps1 sync [source|all]
   .\scripts\jarvis.ps1 providers
   .\scripts\jarvis.ps1 agent [triage|planning|research|review] "task"
+  .\scripts\jarvis.ps1 uploads
   .\scripts\jarvis.ps1 jobs
   .\scripts\jarvis.ps1 start
   .\scripts\jarvis.ps1 install
@@ -79,6 +80,7 @@ switch ($commandName) {
   "sync" { $nodeArguments += @("sync", $(if ($Target) { $Target } else { "all" })) }
   "providers" { $nodeArguments += "providers" }
   "agent" { $nodeArguments += @("agent", $(if ($Target) { $Target } else { "planning" })) + $Remaining }
+  "uploads" { $nodeArguments += "uploads" }
   "jobs" { $nodeArguments += "jobs" }
   "start" { $nodeArguments += "daemon" }
   default { Show-JarvisHelp; throw "Unknown Academic Jarvis command: $Command" }

@@ -28,11 +28,14 @@ Implemented:
 - bounded Teams and Moodle assignment-detail traversal plus protected local
   indexing of teacher-provided files, checksums, plain text, and page-marked
   text extraction from digital PDFs;
-- private dashboard file staging in R2 with format checks, SHA-256 integrity,
+- private dashboard file intake in R2 with format checks, SHA-256 integrity,
   deterministic current-assignment suggestions, private download, and deletion;
+- leased local-worker processing for private uploads, including a second size and
+  checksum verification, PDF/text extraction, retryable status, and visible
+  indexed/waiting/attention counts;
 - adaptive study suggestions built only from verified, dated school items;
-- subject workspaces with assignments, source files, study blocks, and
-  evidence-aware chat citations;
+- subject workspaces with assignments, source and personal files, study blocks,
+  and query-ranked chat citations that retain PDF page locators;
 - persistent, budgeted curator, planner, tutor, reviewer, and improver runs,
   including visible handoffs and provider/token audit data;
 - optional code-agent branch preparation behind two independent approval
@@ -178,8 +181,8 @@ Scheduler entry that starts at Windows sign-in:
 
 Remove only the automatic-start task with `.\scripts\jarvis.ps1 uninstall`.
 This does not delete credentials, browser sessions, or school data. The daemon
-checks school sources every 30 minutes and the agent queue every 60 seconds by
-default.
+checks school sources every 30 minutes and the private-upload and agent queues
+every 60 seconds by default.
 
 Real source changes queue one bounded curator -> planner -> reviewer run by
 default. Set `JARVIS_AGENT_AUTO_TRIAGE=false` in the private worker environment
@@ -197,9 +200,12 @@ always-running model. Its main flow is:
    than being guessed.
 3. Teacher files are downloaded into protected local storage, checksummed, and
    text-extracted when supported. Digital PDF excerpts retain page markers.
-4. The worker publishes bounded records and excerpts to the private dashboard.
+4. Files added through Knowledge stay in private R2. The worker claims them with
+   a short-lived lease, verifies size and SHA-256 again, and returns only bounded
+   extracted text and processing metadata.
+5. The worker publishes bounded records and excerpts to the private dashboard.
    The original downloaded school-file bytes remain local.
-5. D1 queues bounded curator, planner, tutor, reviewer, improver, or coder jobs.
+6. D1 queues bounded curator, planner, tutor, reviewer, improver, or coder jobs.
    The worker claims each job and routes it through the configured provider
    chain. Without an API key it returns a limited deterministic local result;
    no hidden model runs on the laptop.
@@ -217,11 +223,14 @@ Moodle host. Archived courses are deprioritized unless they contain recent
 work. Selector failures produce warnings and attention states instead of fake
 tasks.
 
-Digital PDFs can now be parsed locally into page-marked text for subject chat
-and agent citations. A scanned PDF can still contain no machine-readable text;
-OCR, diagrams, handwriting, and reliable DOCX/PPTX chapter extraction remain a
-separate document-intelligence step. The connector can download those files
-now, but Jarvis must not claim to understand content it did not extract.
+Digital PDFs and plain-text formats can now be parsed locally for subject chat
+and agent citations. Jarvis ranks bounded excerpts against each question and
+keeps PDF page locators in the citation record. The same processing applies to
+files added through Knowledge; unmatched indexed files appear under General.
+A scanned PDF can still contain no machine-readable text. OCR, diagrams,
+handwriting, and reliable Office-document extraction remain a separate,
+sandboxed document-intelligence step. Jarvis stores those files and labels them
+`stored only`; it does not claim to understand content it did not extract.
 
 Individual setup pieces can be repeated safely with
 `.\scripts\jarvis.ps1 credentials`, `.\scripts\jarvis.ps1 token`, and
@@ -283,8 +292,12 @@ Process queued dashboard jobs immediately (the daemon also does this after each
 source-sync cycle):
 
 ```powershell
+.\scripts\jarvis.ps1 uploads
 .\scripts\jarvis.ps1 jobs
 ```
+
+`uploads` processes up to ten waiting private files without running a school
+sync. It never submits a file to Teams or Moodle.
 
 Provider failures automatically fall through the configured route. Only
 normalized, redacted item fields are sent during automatic triage; IAM

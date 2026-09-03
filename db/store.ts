@@ -2,6 +2,7 @@ import { and, asc, desc, eq, isNull, lt, sql } from "drizzle-orm";
 
 import type { CommandIntent } from "@/packages/core/src/command-router";
 import type { DashboardState, ProviderStatus } from "@/packages/core/src/dashboard";
+import { rankDocumentEvidence } from "@/packages/core/src/document-retrieval";
 import type { NormalizedAcademicItem, SourceKind } from "@/packages/core/src/model";
 import { buildAdaptiveStudyBlocks } from "@/packages/core/src/study-planner";
 import {
@@ -296,6 +297,12 @@ export async function readDashboardState(): Promise<DashboardState> {
       status: upload.status,
       matchConfidence: upload.matchConfidence,
       matchReason: upload.matchReason,
+      extractor: upload.extractor,
+      pageCount: upload.pageCount,
+      processingMessage: upload.processingMessage,
+      attemptCount: upload.attemptCount,
+      processingStartedAt: iso(upload.processingStartedAt),
+      processingFinishedAt: iso(upload.processingFinishedAt),
       createdAt: upload.createdAt.toISOString(),
       destination: item && sourceKind ? {
         academicItemId: item.id,
@@ -455,7 +462,145 @@ export async function getStagedUploadFile(id: string) {
     name: stagedUploads.originalName,
     mimeType: stagedUploads.mimeType,
     sizeBytes: stagedUploads.sizeBytes,
+    checksum: stagedUploads.checksum,
+    status: stagedUploads.status,
   }).from(stagedUploads).where(eq(stagedUploads.id, id)).limit(1))[0] ?? null;
+}
+
+export async function claimNextStagedUpload() {
+  const db = getDb();
+  const staleBefore = new Date(Date.now() - 15 * 60_000);
+  await db.update(stagedUploads).set({
+    status: "staged",
+    processingLeaseId: null,
+    processingStartedAt: null,
+    processingMessage: "Previous indexing attempt timed out; returned to the queue.",
+    updatedAt: new Date(),
+  }).where(and(eq(stagedUploads.status, "processing"), lt(stagedUploads.processingStartedAt, staleBefore)));
+
+  const candidate = (await db.select().from(stagedUploads)
+    .where(eq(stagedUploads.status, "staged"))
+    .orderBy(asc(stagedUploads.createdAt))
+    .limit(1))[0];
+  if (!candidate) return null;
+
+  const leaseId = crypto.randomUUID();
+  const startedAt = new Date();
+  await db.update(stagedUploads).set({
+    status: "processing",
+    processingLeaseId: leaseId,
+    processingStartedAt: startedAt,
+    processingFinishedAt: null,
+    processingMessage: "Local worker is verifying and reading this file.",
+    attemptCount: sql`${stagedUploads.attemptCount} + 1`,
+    updatedAt: startedAt,
+  }).where(and(eq(stagedUploads.id, candidate.id), eq(stagedUploads.status, "staged")));
+  const claimed = (await db.select().from(stagedUploads).where(and(
+    eq(stagedUploads.id, candidate.id),
+    eq(stagedUploads.status, "processing"),
+    eq(stagedUploads.processingLeaseId, leaseId),
+  )).limit(1))[0];
+  if (!claimed) return null;
+
+  return {
+    id: claimed.id,
+    leaseId,
+    name: claimed.originalName,
+    mimeType: claimed.mimeType,
+    sizeBytes: claimed.sizeBytes,
+    checksum: claimed.checksum,
+    attemptCount: claimed.attemptCount,
+    createdAt: claimed.createdAt.toISOString(),
+  };
+}
+
+export async function getClaimedStagedUploadFile(id: string, leaseId: string) {
+  const db = getDb();
+  return (await db.select({
+    id: stagedUploads.id,
+    objectKey: stagedUploads.objectKey,
+    name: stagedUploads.originalName,
+    mimeType: stagedUploads.mimeType,
+    sizeBytes: stagedUploads.sizeBytes,
+    checksum: stagedUploads.checksum,
+  }).from(stagedUploads).where(and(
+    eq(stagedUploads.id, id),
+    eq(stagedUploads.status, "processing"),
+    eq(stagedUploads.processingLeaseId, leaseId),
+  )).limit(1))[0] ?? null;
+}
+
+export async function finishStagedUpload(id: string, leaseId: string, payload: {
+  status: "indexed" | "stored" | "failed";
+  extractedText?: string | null;
+  extractor?: string | null;
+  pageCount?: number | null;
+  message?: string | null;
+}) {
+  const db = getDb();
+  const existing = (await db.select({ id: stagedUploads.id }).from(stagedUploads).where(and(
+    eq(stagedUploads.id, id),
+    eq(stagedUploads.status, "processing"),
+    eq(stagedUploads.processingLeaseId, leaseId),
+  )).limit(1))[0];
+  if (!existing) return null;
+  const finishedAt = new Date();
+  const extractedText = payload.status === "indexed" ? payload.extractedText?.trim().slice(0, 100_000) || null : null;
+  if (payload.status === "indexed" && !extractedText) throw new Error("Indexed upload results require extracted text.");
+  await db.update(stagedUploads).set({
+    status: payload.status,
+    extractedText,
+    extractor: payload.extractor?.slice(0, 80) ?? null,
+    pageCount: payload.pageCount === null || payload.pageCount === undefined
+      ? null
+      : Math.max(1, Math.min(250, Math.round(payload.pageCount))),
+    processingMessage: payload.message?.slice(0, 500) ?? null,
+    processingLeaseId: null,
+    processingFinishedAt: finishedAt,
+    updatedAt: finishedAt,
+  }).where(and(
+    eq(stagedUploads.id, id),
+    eq(stagedUploads.status, "processing"),
+    eq(stagedUploads.processingLeaseId, leaseId),
+  ));
+  await db.insert(auditEvents).values({
+    id: crypto.randomUUID(),
+    action: "staged_file_processed",
+    entityType: "staged_upload",
+    entityId: id,
+    actor: "connector",
+    detailsJson: JSON.stringify({ status: payload.status, extractor: payload.extractor ?? null, pageCount: payload.pageCount ?? null }),
+    createdAt: finishedAt,
+  }).catch(() => undefined);
+  return { id, status: payload.status };
+}
+
+export async function retryStagedUpload(id: string) {
+  const db = getDb();
+  const existing = (await db.select().from(stagedUploads).where(eq(stagedUploads.id, id)).limit(1))[0];
+  if (!existing || !["stored", "failed"].includes(existing.status)) return null;
+  const updatedAt = new Date();
+  await db.update(stagedUploads).set({
+    status: "staged",
+    extractedText: null,
+    extractor: null,
+    pageCount: null,
+    processingMessage: "Queued for another local indexing attempt.",
+    processingLeaseId: null,
+    processingStartedAt: null,
+    processingFinishedAt: null,
+    updatedAt,
+  }).where(and(eq(stagedUploads.id, id), eq(stagedUploads.status, existing.status)));
+  await db.insert(auditEvents).values({
+    id: crypto.randomUUID(),
+    action: "staged_file_requeued",
+    entityType: "staged_upload",
+    entityId: id,
+    actor: "user",
+    detailsJson: JSON.stringify({ previousStatus: existing.status }),
+    createdAt: updatedAt,
+  }).catch(() => undefined);
+  return { id, status: "staged" as const };
 }
 
 export async function deleteStagedUploadRecord(id: string) {
@@ -1161,7 +1306,7 @@ export async function ingestWorkerSync(payload: WorkerSyncPayload) {
 export async function createSubjectChatJob(message: string, subject: string | null) {
   const db = getDb();
   const normalizedSubject = subject?.trim().toLowerCase() || null;
-  const [itemRows, documentRows, noteRows, subjectRows] = await Promise.all([
+  const [itemRows, documentRows, uploadRows, noteRows, subjectRows] = await Promise.all([
     db.select({
       item: academicItems,
       subjectName: subjects.name,
@@ -1180,13 +1325,44 @@ export async function createSubjectChatJob(message: string, subject: string | nu
       .leftJoin(sources, eq(documents.sourceId, sources.id))
       .orderBy(desc(documents.updatedAt))
       .limit(100),
+    db.select({
+      upload: stagedUploads,
+      subjectName: subjects.name,
+      sourceName: sources.displayName,
+    }).from(stagedUploads)
+      .leftJoin(academicItems, eq(stagedUploads.academicItemId, academicItems.id))
+      .leftJoin(subjects, eq(academicItems.subjectId, subjects.id))
+      .leftJoin(sources, eq(academicItems.sourceId, sources.id))
+      .where(eq(stagedUploads.status, "indexed"))
+      .orderBy(desc(stagedUploads.updatedAt))
+      .limit(100),
     db.select().from(knowledgeNotes).orderBy(desc(knowledgeNotes.updatedAt)).limit(80),
     db.select().from(subjects),
   ]);
   const subjectRow = normalizedSubject
     ? subjectRows.find((candidate) => candidate.normalizedName === normalizedSubject) ?? null
     : null;
-  const matches = (value: string | null | undefined) => !normalizedSubject || value?.trim().toLowerCase() === normalizedSubject;
+  const matches = (value: string | null | undefined) => !normalizedSubject || (value?.trim().toLowerCase() ?? "general") === normalizedSubject;
+  const rankedDocuments = rankDocumentEvidence(message, [
+    ...documentRows.filter((row) => matches(row.subjectName) && row.document.extractedText).map((row) => ({
+      id: row.document.id,
+      kind: "document" as const,
+      title: row.document.name,
+      subject: row.subjectName ?? "General",
+      source: row.sourceName ?? "Local worker",
+      text: row.document.extractedText ?? "",
+    })),
+    ...uploadRows.filter((row) => matches(row.subjectName) && row.upload.extractedText).map((row) => ({
+      id: row.upload.id,
+      kind: "upload" as const,
+      title: row.upload.originalName,
+      subject: row.subjectName ?? "General",
+      source: row.sourceName ? `Private upload for ${row.sourceName}` : "Private upload",
+      text: row.upload.extractedText ?? "",
+    })),
+  ], 12);
+  let documentRef = 0;
+  let uploadRef = 0;
   const citations = [
     ...itemRows.filter((row) => matches(row.subjectName)).slice(0, 24).map((row, index) => ({
       ref: `A${index + 1}`,
@@ -1200,13 +1376,14 @@ export async function createSubjectChatJob(message: string, subject: string | nu
       evidence: row.item.evidence,
       description: row.item.description?.slice(0, 800) ?? null,
     })),
-    ...documentRows.filter((row) => matches(row.subjectName)).slice(0, 12).map((row, index) => ({
-      ref: `D${index + 1}`,
-      kind: "document",
-      title: row.document.name,
-      subject: row.subjectName ?? "General",
-      source: row.sourceName ?? "Local worker",
-      excerpt: row.document.extractedText?.slice(0, 1_500) ?? null,
+    ...rankedDocuments.map((row) => ({
+      ref: row.kind === "upload" ? `U${++uploadRef}` : `D${++documentRef}`,
+      kind: row.kind,
+      title: row.title,
+      subject: row.subject,
+      source: row.source,
+      locator: row.locator,
+      excerpt: row.excerpt,
     })),
     ...noteRows.filter((note) => matches(note.subject)).slice(0, 10).map((note, index) => ({
       ref: `N${index + 1}`,
@@ -1229,7 +1406,7 @@ export async function createSubjectChatJob(message: string, subject: string | nu
       prompt: message.slice(0, 4_000),
       subject: subject?.slice(0, 200) ?? null,
       citations,
-      instruction: "Answer from the supplied citation records. Cite factual claims as [A1], [D1], or [N1]. Say plainly when the indexed evidence is insufficient, and never imply access beyond this context.",
+      instruction: "Answer from the supplied citation records. Cite factual claims as [A1], [D1], [U1], or [N1]. Document and upload excerpts include page or section locators. Say plainly when the indexed evidence is insufficient, and never imply access beyond this context.",
     },
   });
   await db.insert(auditEvents).values({

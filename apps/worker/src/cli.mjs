@@ -15,6 +15,7 @@ import { dashboardUrl, readSitesBypassToken, readWorkerToken, publishSyncResult 
 import { providerStatus, runRoutedTask } from "./agents/providers.mjs";
 import { drainAgentJobs } from "./agents/jobs.mjs";
 import { syncSource } from "./sources/index.mjs";
+import { drainStagedUploads } from "./uploads.mjs";
 
 function usage() {
   return `Academic Jarvis IAM worker
@@ -27,6 +28,7 @@ Usage:
   npm run providers
   npm run doctor
   npm run agent -- <triage|planning|research|review> <prompt>
+  npm run uploads
   npm run jobs
   npm run daemon
 
@@ -302,10 +304,19 @@ async function daemon() {
   const credentials = await credentialStatus();
   console.log(`Jarvis worker started; checking ${sourceKeys.length} sources every ${workerConfig.syncIntervalMinutes} minutes.`);
   console.log(`Agent queue polling: every ${workerConfig.agentPollSeconds} seconds.`);
+  console.log("Private upload indexing: enabled with checksum verification.");
   console.log(`Automatic IAM login: ${credentials.enabled ? `enabled (${credentials.storage})` : "disabled"}.`);
   while (!stopping) {
     const cycleStartedAt = new Date().toISOString();
+    const uploadsBeforeSync = await drainStagedUploads(2).catch((error) => [{
+      state: "failed",
+      error: error instanceof Error ? error.message : String(error),
+    }]);
     const results = await sync("all", true);
+    const uploadsAfterSync = await drainStagedUploads(2).catch((error) => [{
+      state: "failed",
+      error: error instanceof Error ? error.message : String(error),
+    }]);
     const agentJobs = await drainAgentJobs(3).catch((error) => [{
       state: "failed",
       error: error instanceof Error ? error.message : String(error),
@@ -316,6 +327,7 @@ async function daemon() {
       cycleFinishedAt: new Date().toISOString(),
       nextCheckMinutes: workerConfig.syncIntervalMinutes,
       sources: results.map((result) => ({ source: result.source, state: result.health?.state ?? result.state })),
+      uploads: [...uploadsBeforeSync, ...uploadsAfterSync],
       agentJobs,
     });
 
@@ -323,6 +335,7 @@ async function daemon() {
     let nextAgentPoll = Date.now() + workerConfig.agentPollSeconds * 1_000;
     while (!stopping && Date.now() < waitUntil) {
       if (Date.now() >= nextAgentPoll) {
+        await drainStagedUploads(2).catch(() => undefined);
         await drainAgentJobs(3).catch(() => undefined);
         nextAgentPoll = Date.now() + workerConfig.agentPollSeconds * 1_000;
       }
@@ -345,6 +358,7 @@ try {
   else if (command === "providers") console.log(JSON.stringify(await providerStatus(), null, 2));
   else if (command === "doctor") await doctor({ network: !flags.has("--offline"), json: flags.has("--json") });
   else if (command === "agent") await runAgent(target || "planning", rest);
+  else if (command === "uploads") console.log(JSON.stringify(await drainStagedUploads(10), null, 2));
   else if (command === "jobs") console.log(JSON.stringify(await drainAgentJobs(10), null, 2));
   else if (command === "daemon") await daemon();
   else {

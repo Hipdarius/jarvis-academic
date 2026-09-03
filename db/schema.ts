@@ -80,8 +80,16 @@ export const stagedUploads = sqliteTable("staged_uploads", {
   matchConfidence: integer("match_confidence"),
   matchReason: text("match_reason"),
   status: text("status", {
-    enum: ["staged", "ready_for_review", "submitted", "failed"],
+    enum: ["staged", "processing", "indexed", "stored", "failed", "ready_for_review", "submitted"],
   }).notNull().default("staged"),
+  extractedText: text("extracted_text"),
+  extractor: text("extractor"),
+  pageCount: integer("page_count"),
+  processingMessage: text("processing_message"),
+  processingLeaseId: text("processing_lease_id"),
+  processingStartedAt: integer("processing_started_at", { mode: "timestamp_ms" }),
+  processingFinishedAt: integer("processing_finished_at", { mode: "timestamp_ms" }),
+  attemptCount: integer("attempt_count").notNull().default(0),
   createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
   updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
 });

@@ -14,6 +14,9 @@ export async function DELETE(_request: Request, context: { params: Promise<{ id:
   if (!validId(id)) return NextResponse.json({ error: "Invalid staged file." }, { status: 400 });
   const file = await getStagedUploadFile(id);
   if (!file) return NextResponse.json({ error: "Staged file not found." }, { status: 404 });
+  if (file.status === "processing") {
+    return NextResponse.json({ error: "The local worker is indexing this file. Try again in a moment." }, { status: 409 });
+  }
   await getUploadBucket().delete(file.objectKey);
   await deleteStagedUploadRecord(id);
   return NextResponse.json({ deleted: true }, { headers: { "Cache-Control": "no-store" } });

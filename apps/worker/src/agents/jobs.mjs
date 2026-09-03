@@ -60,7 +60,11 @@ function deterministicResult(job) {
       const ref = typeof entry.ref === "string" ? entry.ref : "?";
       const title = typeof entry.title === "string" ? entry.title : "Untitled record";
       const due = typeof entry.dueAt === "string" ? `, due ${entry.dueAt}` : "";
-      return `- [${ref}] ${title}${due}`;
+      const locator = typeof entry.locator === "string" ? `, ${entry.locator}` : "";
+      const excerpt = typeof entry.excerpt === "string" && entry.excerpt.trim()
+        ? `\n  ${entry.excerpt.replace(/\s+/g, " ").slice(0, 280)}`
+        : "";
+      return `- [${ref}] ${title}${due}${locator}${excerpt}`;
     });
     return `No AI provider is configured, so here is the verified context Jarvis can safely surface:\n${lines.join("\n")}\n\nI cannot answer beyond these indexed records without a configured provider or more notes.`;
   }

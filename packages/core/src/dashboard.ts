@@ -69,9 +69,15 @@ export type DashboardStagedUpload = {
   mimeType: string;
   sizeBytes: number;
   checksum: string;
-  status: "staged" | "ready_for_review" | "submitted" | "failed";
+  status: "staged" | "processing" | "indexed" | "stored" | "failed" | "ready_for_review" | "submitted";
   matchConfidence: number | null;
   matchReason: string | null;
+  extractor: string | null;
+  pageCount: number | null;
+  processingMessage: string | null;
+  attemptCount: number;
+  processingStartedAt: string | null;
+  processingFinishedAt: string | null;
   createdAt: string;
   destination: {
     academicItemId: string;

@@ -15,6 +15,7 @@
     "providers": "node src/entry.mjs providers",
     "doctor": "node src/entry.mjs doctor",
     "agent": "node src/entry.mjs agent",
+    "uploads": "node src/entry.mjs uploads",
     "jobs": "node src/entry.mjs jobs",
     "daemon": "node src/entry.mjs daemon",
     "test": "node --test test/*.test.mjs"

@@ -60,6 +60,7 @@ import type {
   DashboardItem,
   DashboardSource,
   DashboardState,
+  DashboardStagedUpload,
 } from "@/packages/core/src/dashboard";
 
 type NavItem = { label: string; icon: LucideIcon };
@@ -161,6 +162,16 @@ function formatFileSize(sizeBytes: number) {
   if (sizeBytes < 1_024) return `${sizeBytes} B`;
   if (sizeBytes < 1_024 * 1_024) return `${Math.round(sizeBytes / 1_024)} KB`;
   return `${(sizeBytes / (1_024 * 1_024)).toFixed(1)} MB`;
+}
+
+function uploadStatus(status: DashboardStagedUpload["status"]) {
+  if (status === "indexed") return { label: "indexed", tone: "live" };
+  if (status === "processing") return { label: "indexing", tone: "attention" };
+  if (status === "stored") return { label: "stored only", tone: "attention" };
+  if (status === "failed") return { label: "needs attention", tone: "error" };
+  if (status === "submitted") return { label: "submitted", tone: "live" };
+  if (status === "ready_for_review") return { label: "review ready", tone: "attention" };
+  return { label: "waiting", tone: "idle" };
 }
 
 function sourceTone(status: DashboardSource["status"]) {
@@ -265,6 +276,7 @@ export default function Home() {
   const [uploadInputKey, setUploadInputKey] = useState(0);
   const [uploadDeleteConfirmId, setUploadDeleteConfirmId] = useState<string | null>(null);
   const [uploadDeletePendingId, setUploadDeletePendingId] = useState<string | null>(null);
+  const [uploadRetryPendingId, setUploadRetryPendingId] = useState<string | null>(null);
 
   const loadState = useCallback(async (silent = false) => {
     if (!silent) setStateLoading(true);
@@ -341,6 +353,12 @@ export default function Home() {
     for (const document of state?.documents ?? []) if (!grouped.has(document.subject)) grouped.set(document.subject, []);
     for (const block of state?.studyBlocks ?? []) if (!grouped.has(block.subject)) grouped.set(block.subject, []);
     for (const note of state?.notes ?? []) if (!grouped.has(note.subject)) grouped.set(note.subject, []);
+    for (const upload of state?.stagedUploads ?? []) {
+      const uploadSubject = upload.destination?.subject ?? "General";
+      if (upload.status === "indexed" && !grouped.has(uploadSubject)) {
+        grouped.set(uploadSubject, []);
+      }
+    }
     return [...grouped.entries()].sort(([a], [b]) => a.localeCompare(b));
   }, [state]);
 
@@ -511,8 +529,8 @@ export default function Home() {
       };
       if (!response.ok) throw new Error(payload.error ?? "The file could not be staged.");
       setUploadNotice(payload.match
-        ? `Staged privately. Destination match: ${payload.match.confidence}% confidence.`
-        : "Staged privately without a destination match.");
+        ? `Stored privately and queued for indexing. Destination match: ${payload.match.confidence}% confidence.`
+        : "Stored privately and queued for indexing without a destination match.");
       setUploadFile(null);
       setUploadTarget("");
       setUploadInputKey((value) => value + 1);
@@ -541,6 +559,23 @@ export default function Home() {
       setUploadError(error instanceof Error ? error.message : "The staged file could not be deleted.");
     } finally {
       setUploadDeletePendingId(null);
+    }
+  }
+
+  async function retryUpload(id: string) {
+    if (uploadRetryPendingId) return;
+    setUploadRetryPendingId(id);
+    setUploadError("");
+    try {
+      const response = await fetch(`/api/uploads/${encodeURIComponent(id)}/retry`, { method: "POST" });
+      const payload = await response.json() as { error?: string };
+      if (!response.ok) throw new Error(payload.error ?? "The file could not be queued again.");
+      setUploadNotice("Queued for another local indexing attempt.");
+      await loadState(true);
+    } catch (error) {
+      setUploadError(error instanceof Error ? error.message : "The file could not be queued again.");
+    } finally {
+      setUploadRetryPendingId(null);
     }
   }
 
@@ -758,6 +793,7 @@ export default function Home() {
     if (selectedSubject) {
       const subjectItems = state?.items.filter((item) => item.subject === selectedSubject) ?? [];
       const subjectDocuments = state?.documents.filter((document) => document.subject === selectedSubject) ?? [];
+      const subjectUploads = state?.stagedUploads.filter((upload) => upload.status === "indexed" && (upload.destination?.subject ?? "General") === selectedSubject) ?? [];
       const subjectBlocks = state?.studyBlocks.filter((block) => block.subject === selectedSubject && block.status !== "skipped") ?? [];
       const chatJobs = state?.agentJobs.filter((job) => job.kind === "subject_chat" && job.subject === selectedSubject) ?? [];
       const activeChat = activeChatJobId ? state?.agentJobs.find((job) => job.id === activeChatJobId) : null;
@@ -765,7 +801,7 @@ export default function Home() {
         <section className="collection-page subject-workspace">
           <button className="back-action" onClick={() => { setSelectedSubject(null); setActiveChatJobId(null); setChatError(""); }} type="button"><ArrowLeft size={16} />All subjects</button>
           <div className="page-heading subject-heading">
-            <div><p className="eyebrow">Subject workspace</p><h1>{selectedSubject}</h1><p>{subjectItems.length} verified record{subjectItems.length === 1 ? "" : "s"}, {subjectDocuments.length} indexed file{subjectDocuments.length === 1 ? "" : "s"}, and {subjectBlocks.length} study window{subjectBlocks.length === 1 ? "" : "s"}.</p></div>
+            <div><p className="eyebrow">Subject workspace</p><h1>{selectedSubject}</h1><p>{subjectItems.length} verified record{subjectItems.length === 1 ? "" : "s"}, {subjectDocuments.length + subjectUploads.length} indexed file{subjectDocuments.length + subjectUploads.length === 1 ? "" : "s"}, and {subjectBlocks.length} study window{subjectBlocks.length === 1 ? "" : "s"}.</p></div>
           </div>
 
           <div className="subject-layout">
@@ -776,14 +812,21 @@ export default function Home() {
               </section>
 
               <section className="data-section">
-                <div className="section-heading compact"><div><p className="eyebrow">Teacher material</p><h2>Indexed files</h2></div><span className="count-chip">{subjectDocuments.length}</span></div>
-                {subjectDocuments.length ? (
+                <div className="section-heading compact"><div><p className="eyebrow">Teacher and personal material</p><h2>Indexed files</h2></div><span className="count-chip">{subjectDocuments.length + subjectUploads.length}</span></div>
+                {subjectDocuments.length || subjectUploads.length ? (
                   <div className="document-list">
                     {subjectDocuments.map((document) => (
                       <article className="document-row" key={document.id}>
                         <span><Paperclip size={17} /></span>
                         <div><strong>{document.name}</strong><small>{document.source} / {fileTypeLabel(document.mimeType)} / {document.extracted ? "text indexed" : "stored locally"}</small></div>
                         {document.sourceUrl ? <a aria-label={`Open source for ${document.name}`} href={document.sourceUrl} rel="noreferrer" target="_blank" title="Open source"><ArrowRight size={16} /></a> : null}
+                      </article>
+                    ))}
+                    {subjectUploads.map((upload) => (
+                      <article className="document-row" key={upload.id}>
+                        <span><LockKeyhole size={17} /></span>
+                        <div><strong>{upload.name}</strong><small>Private upload / {upload.pageCount ? `${upload.pageCount} page${upload.pageCount === 1 ? "" : "s"}` : fileTypeLabel(upload.mimeType)} / text indexed</small></div>
+                        <a aria-label={`Download ${upload.name}`} href={`/api/uploads/${encodeURIComponent(upload.id)}/file`} title="Download private upload"><Download size={16} /></a>
                       </article>
                     ))}
                   </div>
@@ -837,7 +880,8 @@ export default function Home() {
             {subjectGroups.map(([subject, items]) => {
               const openCount = items.filter((item) => item.status !== "done" && item.status !== "cancelled").length;
               const sourceCount = new Set(items.map((item) => item.source)).size;
-              const documentCount = state?.documents.filter((document) => document.subject === subject).length ?? 0;
+              const documentCount = (state?.documents.filter((document) => document.subject === subject).length ?? 0)
+                + (state?.stagedUploads.filter((upload) => upload.status === "indexed" && (upload.destination?.subject ?? "General") === subject).length ?? 0);
               const studyCount = state?.studyBlocks.filter((block) => block.subject === subject && block.status !== "done" && block.status !== "skipped").length ?? 0;
               return (
                 <button className="subject-index-row" key={subject} onClick={() => setSelectedSubject(subject)} type="button">
@@ -881,14 +925,22 @@ export default function Home() {
     const notes = state?.notes ?? [];
     const indexedDocuments = state?.documents ?? [];
     const stagedUploads = state?.stagedUploads ?? [];
+    const indexedUploadCount = stagedUploads.filter((upload) => upload.status === "indexed").length;
+    const waitingUploadCount = stagedUploads.filter((upload) => upload.status === "staged" || upload.status === "processing").length;
+    const attentionUploadCount = stagedUploads.filter((upload) => upload.status === "stored" || upload.status === "failed").length;
     return (
       <section className="collection-page">
-        <div className="page-heading"><div><p className="eyebrow">Captured and source-derived context</p><h1>Knowledge</h1><p>{notes.length} note{notes.length === 1 ? "" : "s"}, {indexedDocuments.length} school file{indexedDocuments.length === 1 ? "" : "s"}, {stagedUploads.length} staged.</p></div><button className="primary-action" onClick={() => openCommand("Remember this: ")} type="button"><Plus size={17} />New note</button></div>
+        <div className="page-heading"><div><p className="eyebrow">Captured and source-derived context</p><h1>Knowledge</h1><p>{notes.length} note{notes.length === 1 ? "" : "s"}, {indexedDocuments.length} school file{indexedDocuments.length === 1 ? "" : "s"}, {indexedUploadCount} personal file{indexedUploadCount === 1 ? "" : "s"} indexed.</p></div><button className="primary-action" onClick={() => openCommand("Remember this: ")} type="button"><Plus size={17} />New note</button></div>
 
         <section className="data-section upload-section">
           <div className="section-heading compact">
-            <div><p className="eyebrow">Private object storage</p><h2>Submission staging</h2></div>
-            <span className="status-chip idle">staged only</span>
+            <div><p className="eyebrow">Private object storage</p><h2>File inbox</h2></div>
+            <span className={`status-chip ${indexedUploadCount ? "live" : "idle"}`}>{indexedUploadCount} indexed</span>
+          </div>
+          <div className="upload-pipeline-summary" aria-label="Private file indexing summary">
+            <span><strong>{indexedUploadCount}</strong><small>indexed</small></span>
+            <span><strong>{waitingUploadCount}</strong><small>waiting</small></span>
+            <span><strong>{attentionUploadCount}</strong><small>needs attention</small></span>
           </div>
           <form className="upload-form" onSubmit={(event) => void stageUpload(event)}>
             <label className={`upload-picker ${uploadFile ? "selected" : ""}`}>
@@ -904,7 +956,7 @@ export default function Home() {
             <label className="upload-destination">
               <span>Destination</span>
               <select onChange={(event) => setUploadTarget(event.target.value)} value={uploadTarget}>
-                <option value="">Let Jarvis suggest a current assignment</option>
+                <option value="">Suggest a current assignment</option>
                 {submissionCandidates.map((item) => (
                   <option key={item.id} value={item.id}>{item.subject} / {item.title} / {item.source}</option>
                 ))}
@@ -919,30 +971,46 @@ export default function Home() {
           {uploadError ? <p className="form-error" role="alert">{uploadError}</p> : null}
           {stagedUploads.length ? (
             <div className="staged-upload-list">
-              {stagedUploads.map((upload) => (
-                <article className="staged-upload-row" key={upload.id}>
-                  <span className="staged-file-icon"><FileCheck2 size={17} /></span>
-                  <div className="staged-file-main">
-                    <strong>{upload.name}</strong>
-                    <small>{formatFileSize(upload.sizeBytes)} / SHA-256 {upload.checksum.slice(0, 12)}</small>
-                    {upload.destination ? <p><span>{upload.destination.subject}</span>{upload.destination.title} / {upload.destination.source}{upload.matchConfidence ? ` / ${upload.matchConfidence}% match` : ""}</p> : <p>No current assignment match</p>}
-                  </div>
-                  <span className="status-chip idle">not submitted</span>
-                  <div className="staged-file-actions">
-                    <a aria-label={`Download ${upload.name}`} href={`/api/uploads/${encodeURIComponent(upload.id)}/file`} title="Download staged file"><Download size={16} /></a>
-                    <button
-                      aria-label={uploadDeleteConfirmId === upload.id ? `Confirm deletion of ${upload.name}` : `Delete ${upload.name}`}
-                      className={uploadDeleteConfirmId === upload.id ? "confirm" : ""}
-                      disabled={uploadDeletePendingId === upload.id}
-                      onClick={() => void deleteUpload(upload.id)}
-                      title={uploadDeleteConfirmId === upload.id ? "Confirm delete" : "Delete staged file"}
-                      type="button"
-                    >
-                      {uploadDeletePendingId === upload.id ? <LoaderCircle className="spin" size={16} /> : uploadDeleteConfirmId === upload.id ? <Check size={16} /> : <Trash2 size={16} />}
-                    </button>
-                  </div>
-                </article>
-              ))}
+              {stagedUploads.map((upload) => {
+                const status = uploadStatus(upload.status);
+                const retryable = upload.status === "stored" || upload.status === "failed";
+                return (
+                  <article className="staged-upload-row" key={upload.id}>
+                    <span className="staged-file-icon">{upload.status === "processing" ? <LoaderCircle className="spin" size={17} /> : <FileCheck2 size={17} />}</span>
+                    <div className="staged-file-main">
+                      <strong>{upload.name}</strong>
+                      <small>{formatFileSize(upload.sizeBytes)} / SHA-256 {upload.checksum.slice(0, 12)} / attempt {upload.attemptCount}</small>
+                      {upload.destination ? <p><span>{upload.destination.subject}</span>{upload.destination.title} / {upload.destination.source}{upload.matchConfidence ? ` / ${upload.matchConfidence}% match` : ""}</p> : <p>No current assignment match</p>}
+                      <span className="processing-detail">{upload.processingMessage ?? (upload.status === "staged" ? "Waiting for the local worker." : "Processing details unavailable.")} <b>Private in Jarvis; not submitted.</b></span>
+                    </div>
+                    <span className={`status-chip ${status.tone}`}>{status.label}</span>
+                    <div className={`staged-file-actions ${retryable ? "can-retry" : ""}`}>
+                      <a aria-label={`Download ${upload.name}`} href={`/api/uploads/${encodeURIComponent(upload.id)}/file`} title="Download private file"><Download size={16} /></a>
+                      {retryable ? (
+                        <button
+                          aria-label={`Retry indexing ${upload.name}`}
+                          disabled={uploadRetryPendingId === upload.id}
+                          onClick={() => void retryUpload(upload.id)}
+                          title="Retry local indexing"
+                          type="button"
+                        >
+                          <RefreshCw className={uploadRetryPendingId === upload.id ? "spin" : ""} size={16} />
+                        </button>
+                      ) : null}
+                      <button
+                        aria-label={uploadDeleteConfirmId === upload.id ? `Confirm deletion of ${upload.name}` : `Delete ${upload.name}`}
+                        className={uploadDeleteConfirmId === upload.id ? "confirm" : ""}
+                        disabled={upload.status === "processing" || uploadDeletePendingId === upload.id}
+                        onClick={() => void deleteUpload(upload.id)}
+                        title={upload.status === "processing" ? "Indexing in progress" : uploadDeleteConfirmId === upload.id ? "Confirm delete" : "Delete private file"}
+                        type="button"
+                      >
+                        {uploadDeletePendingId === upload.id ? <LoaderCircle className="spin" size={16} /> : uploadDeleteConfirmId === upload.id ? <Check size={16} /> : <Trash2 size={16} />}
+                      </button>
+                    </div>
+                  </article>
+                );
+              })}
             </div>
           ) : <p className="section-empty-copy">No files are waiting for review.</p>}
         </section>
