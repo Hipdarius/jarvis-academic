@@ -1376,7 +1376,7 @@ export default function Home() {
   function renderSystems() {
     const sources = state?.sources ?? [];
     const providers = state?.providers ?? [];
-    const workerLive = state?.worker.state === "running" || state?.worker.state === "degraded";
+    const workerLive = state?.worker.state === "starting" || state?.worker.state === "running" || state?.worker.state === "degraded";
     const latestSyncRequest = state?.syncRequests[0] ?? null;
     return (
       <section className="collection-page systems-page">
@@ -1389,7 +1389,7 @@ export default function Home() {
 
         <section className={`worker-banner ${workerLive ? "live" : "waiting"}`}>
           <span>{workerLive ? <ShieldCheck size={21} /> : <Database size={21} />}</span>
-          <div><p className="eyebrow">Local worker</p><h2>{workerLive ? `Worker ${state?.worker.state}` : "Connect the HP worker to begin."}</h2><p>{workerLive ? `${healthySources} source${healthySources === 1 ? "" : "s"} healthy / version ${state?.worker.version ?? "unknown"}.` : "Credentials stay in Windows DPAPI and are used only on allowlisted identity pages."}</p></div>
+          <div><p className="eyebrow">Local worker</p><h2>{workerLive ? `Worker ${state?.worker.state}` : "Connect the HP worker to begin."}</h2><p>{workerLive ? state?.worker.state === "starting" ? "The first source cycle is in progress." : `${healthySources} source${healthySources === 1 ? "" : "s"} healthy / version ${state?.worker.version ?? "unknown"}.` : "Credentials stay in Windows DPAPI and are used only on allowlisted identity pages."}</p></div>
         </section>
 
         <section className="reliability-strip" aria-label="Worker reliability">
