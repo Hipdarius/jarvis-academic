@@ -360,14 +360,18 @@ async function daemon() {
   process.once("SIGINT", () => { stopping = true; });
   process.once("SIGTERM", () => { stopping = true; });
 
-  const credentials = await credentialStatus();
+  const credentials = await credentialStatus().catch((error) => ({
+    enabled: false,
+    storage: null,
+    error: safeError(error),
+  }));
   const heartbeat = {
-    state: "starting",
+    state: credentials.error ? "degraded" : "starting",
     version: workerVersion,
     cycleStartedAt: null,
     cycleFinishedAt: null,
     nextSyncAt: new Date().toISOString(),
-    lastError: null,
+    lastError: credentials.error ?? null,
   };
   let heartbeatBusy = false;
   const sendHeartbeat = async () => {
@@ -388,8 +392,9 @@ async function daemon() {
     sources: sourceKeys.length,
     syncIntervalMinutes: workerConfig.syncIntervalMinutes,
     syncRequestPollSeconds: workerConfig.syncRequestPollSeconds,
-    credentials: credentials.enabled ? credentials.storage : "disabled",
+    credentials: credentials.enabled ? credentials.storage : credentials.error ? "attention" : "disabled",
   });
+  if (credentials.error) logWorker("credential_attention", { error: credentials.error });
   try {
     while (!stopping) {
       const cycleStartedAt = new Date().toISOString();
