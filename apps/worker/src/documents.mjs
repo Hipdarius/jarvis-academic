@@ -62,6 +62,12 @@ function isAllowedHost(url, allowedHosts) {
   }
 }
 
+function directDownloadUrl(value) {
+  const parsed = new URL(value);
+  if (/\/mod\/resource\/view\.php$/i.test(parsed.pathname)) parsed.searchParams.set("redirect", "1");
+  return parsed.href;
+}
+
 function redactDocumentText(value) {
   return String(value)
     .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, "[school-email]")
@@ -142,19 +148,25 @@ export async function downloadSchoolDocument(page, {
   allowedHosts,
 }) {
   if (!isAllowedHost(url, allowedHosts)) return { state: "skipped_host" };
-  const response = await page.request.get(url, { timeout: 45_000, failOnStatusCode: false });
+  const response = await page.request.get(directDownloadUrl(url), { timeout: 45_000, failOnStatusCode: false });
   if (!response.ok()) return { state: "failed_http", status: response.status() };
   if (!isAllowedHost(response.url(), allowedHosts)) return { state: "skipped_redirect_host" };
 
-  const declaredSize = Number.parseInt(response.headers()["content-length"] ?? "0", 10);
+  const headers = response.headers();
+  const resolvedName = filenameFor(response, name, url);
+  const extension = path.extname(resolvedName).toLowerCase();
+  const mimeType = String(headers["content-type"] ?? "application/octet-stream").split(";")[0].trim().toLowerCase();
+  const finalPath = new URL(response.url()).pathname;
+  const hasAttachmentName = Boolean(filenameFromDisposition(headers["content-disposition"]));
+  if (mimeType === "text/html" && /\/mod\/resource\/view\.php$/i.test(finalPath) && !hasAttachmentName) {
+    return { state: "skipped_navigation" };
+  }
+  if (extension && !allowedExtensions.has(extension)) return { state: "skipped_type", mimeType };
+
+  const declaredSize = Number.parseInt(headers["content-length"] ?? "0", 10);
   if (declaredSize > maxDocumentBytes) return { state: "skipped_size", size: declaredSize };
   const body = await response.body();
   if (body.byteLength > maxDocumentBytes) return { state: "skipped_size", size: body.byteLength };
-
-  const resolvedName = filenameFor(response, name, url);
-  const extension = path.extname(resolvedName).toLowerCase();
-  const mimeType = String(response.headers()["content-type"] ?? "application/octet-stream").split(";")[0].trim().toLowerCase();
-  if (extension && !allowedExtensions.has(extension)) return { state: "skipped_type", mimeType };
 
   const checksum = createHash("sha256").update(body).digest("hex");
   const directoryParts = [safePathSegment(source), safePathSegment(courseExternalId, "general")];

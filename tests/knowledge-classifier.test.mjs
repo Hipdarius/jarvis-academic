@@ -55,3 +55,17 @@ test("keeps uncertain files visible without inventing a subject or chapter", () 
   assert.equal(result.confidence, 0);
   assert.deepEqual(result.topicPath, ["Unclassified"]);
 });
+
+test("groups legacy AMINF filenames into useful topic folders", () => {
+  const cases = [
+    ["MOS_OD_Excel_Associate_0719.pdf", "Spreadsheets & Data Analysis"],
+    ["GDPR_final.pdf", "Data Protection & GDPR"],
+    ["MCD-Library.pdf", "Data Modeling"],
+    ["T03_countries_legalization.csv", "Datasets & Transformation"],
+  ];
+  for (const [name, topic] of cases) {
+    const result = classifyKnowledgeFile({ name, subjectHint: "AMINF", createdAt: new Date("2026-09-04T08:00:00Z") });
+    assert.equal(result.subject, "Information Analysis & Modeling");
+    assert.deepEqual(result.topicPath, [topic]);
+  }
+});

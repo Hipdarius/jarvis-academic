@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { extractDocumentText, safePathSegment } from "../src/documents.mjs";
+import { downloadSchoolDocument, extractDocumentText, safePathSegment } from "../src/documents.mjs";
 import { academicYearStart, currentAcademicYearStart, isArchivedCourse, prioritizeCourses } from "../src/sources/moodle.mjs";
 
 test("sanitizes school filenames without allowing path traversal", () => {
@@ -35,6 +35,34 @@ test("extracts page-addressable text from a digital PDF", async () => {
   const extracted = await extractDocumentText(pdfWithText("Assignment chapter 4"), "application/pdf", ".pdf");
   assert.match(extracted, /\[Page 1\]/);
   assert.match(extracted, /Assignment chapter 4/);
+});
+
+test("requests Moodle's direct file redirect and rejects an unresolved resource page", async () => {
+  let requestedUrl = "";
+  const page = {
+    request: {
+      async get(url) {
+        requestedUrl = url;
+        return {
+          ok: () => true,
+          url: () => url,
+          headers: () => ({ "content-type": "text/html; charset=utf-8" }),
+          body: async () => { throw new Error("Navigation HTML must be rejected before its body is stored."); },
+        };
+      },
+    },
+  };
+  const result = await downloadSchoolDocument(page, {
+    source: "academy",
+    url: "https://academy.am.lu/mod/resource/view.php?id=42",
+    name: "blackboard-1-to-many-File",
+    courseExternalId: "course:42",
+    subject: "AMINF",
+    sourcePath: "AMINF > Data modeling",
+    allowedHosts: ["academy.am.lu"],
+  });
+  assert.equal(new URL(requestedUrl).searchParams.get("redirect"), "1");
+  assert.deepEqual(result, { state: "skipped_navigation" });
 });
 
 test("classifies Moodle course years against the current school year", () => {

@@ -45,8 +45,12 @@ const topicRules: Record<string, Array<[string, RegExp]>> = {
   ],
   "Information Analysis & Modeling": [
     ["SQL", /\b(sql|select|joins?|queries|abfragen)\b/i],
-    ["Data Modeling", /\b(entity relationship|erd|data model|datenmodell|modélisation des données)\b/i],
+    ["Data Modeling", /\b(entity relationship|erd|data model|datenmodell|modélisation des données|mcd|mld|mpd)\b/i],
     ["Normalization", /\b(normalization|normalisation|normalformen?)\b/i],
+    ["Spreadsheets & Data Analysis", /\b(excel|spreadsheet|tableur|power query|pivot table|xlsx)\b/i],
+    ["Microsoft Access", /\b(microsoft access|access database|accdb|access)\b/i],
+    ["Data Protection & GDPR", /\b(gdpr|rgpd|data protection|personal data|donnees personnelles|données personnelles|32016r0679)\b/i],
+    ["Datasets & Transformation", /\b(csv|dataset|open data|importation|data transformation|transformation des données|etl)\b/i],
     ["XML & Structured Data", /\b(xml|xsd|xpath|json schema)\b/i],
   ],
   "Media Communication": [
@@ -102,7 +106,7 @@ function aliasMatch(value: string, alias: string) {
 
 function classifySubject(input: KnowledgeClassificationInput) {
   const regions = [
-    { label: "linked assignment", value: input.subjectHint ?? "", weight: 12 },
+    { label: "school subject", value: input.subjectHint ?? "", weight: 12 },
     { label: "source folder", value: input.sourcePath ?? "", weight: 8 },
     { label: "filename", value: input.name, weight: 6 },
     { label: "assignment title", value: input.academicItemTitle ?? "", weight: 5 },
@@ -184,7 +188,8 @@ function explicitChapter(value: string) {
 }
 
 function inferredTopic(subject: string, value: string) {
-  return topicRules[subject]?.find(([, pattern]) => pattern.test(value))?.[0] ?? null;
+  const normalized = normalizedAcademicText(value);
+  return topicRules[subject]?.find(([, pattern]) => pattern.test(value) || pattern.test(normalized))?.[0] ?? null;
 }
 
 export function classifyKnowledgeFile(input: KnowledgeClassificationInput): KnowledgeClassification {

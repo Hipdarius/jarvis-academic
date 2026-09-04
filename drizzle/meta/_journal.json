@@ -43,6 +43,13 @@
       "when": 1788504860067,
       "tag": "0005_warm_mister_sinister",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1788509138209,
+      "tag": "0006_remove_navigation_artifacts",
+      "breakpoints": true
     }
   ]
 }
