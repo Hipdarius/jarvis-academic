@@ -1,4 +1,4 @@
-import { integer, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
+import { index, integer, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
 
 export const sources = sqliteTable("sources", {
   id: text("id").primaryKey(),
@@ -51,6 +51,20 @@ export const academicItems = sqliteTable("academic_items", {
 }, (table) => [
   uniqueIndex("academic_items_source_external_unique").on(table.sourceId, table.sourceExternalId),
 ]);
+
+export const academicItemOverrides = sqliteTable("academic_item_overrides", {
+  academicItemId: text("academic_item_id").primaryKey().references(() => academicItems.id),
+  status: text("status", {
+    enum: ["inbox", "planned", "in_progress", "done", "cancelled"],
+  }),
+  dueAt: integer("due_at", { mode: "timestamp_ms" }),
+  dueAtOverridden: integer("due_at_overridden", { mode: "boolean" }).notNull().default(false),
+  subjectId: text("subject_id").references(() => subjects.id),
+  subjectOverridden: integer("subject_overridden", { mode: "boolean" }).notNull().default(false),
+  userNote: text("user_note"),
+  dismissedAt: integer("dismissed_at", { mode: "timestamp_ms" }),
+  updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
+});
 
 export const documents = sqliteTable("documents", {
   id: text("id").primaryKey(),
@@ -115,6 +129,50 @@ export const syncRuns = sqliteTable("sync_runs", {
   finishedAt: integer("finished_at", { mode: "timestamp_ms" }),
   errorSummary: text("error_summary"),
 });
+
+export const workerStatus = sqliteTable("worker_status", {
+  id: text("id").primaryKey(),
+  state: text("state", { enum: ["starting", "running", "degraded", "stopping"] }).notNull(),
+  version: text("version").notNull(),
+  cycleStartedAt: integer("cycle_started_at", { mode: "timestamp_ms" }),
+  cycleFinishedAt: integer("cycle_finished_at", { mode: "timestamp_ms" }),
+  nextSyncAt: integer("next_sync_at", { mode: "timestamp_ms" }),
+  heartbeatAt: integer("heartbeat_at", { mode: "timestamp_ms" }).notNull(),
+  lastError: text("last_error"),
+  providerStatusesJson: text("provider_statuses_json").notNull().default("[]"),
+});
+
+export const syncRequests = sqliteTable("sync_requests", {
+  id: text("id").primaryKey(),
+  source: text("source", { enum: ["all", "webuntis", "teams", "academy", "edumoodle"] }).notNull(),
+  status: text("status", { enum: ["queued", "running", "succeeded", "failed"] }).notNull().default("queued"),
+  requestedAt: integer("requested_at", { mode: "timestamp_ms" }).notNull(),
+  claimedAt: integer("claimed_at", { mode: "timestamp_ms" }),
+  finishedAt: integer("finished_at", { mode: "timestamp_ms" }),
+  leaseId: text("lease_id"),
+  resultJson: text("result_json"),
+  error: text("error"),
+}, (table) => [
+  index("sync_requests_status_requested_idx").on(table.status, table.requestedAt),
+]);
+
+export const alerts = sqliteTable("alerts", {
+  id: text("id").primaryKey(),
+  fingerprint: text("fingerprint").notNull().unique(),
+  kind: text("kind", { enum: ["assignment_due", "deadline_changed", "source_attention", "worker_offline"] }).notNull(),
+  severity: text("severity", { enum: ["info", "warning", "urgent"] }).notNull(),
+  status: text("status", { enum: ["active", "acknowledged", "resolved"] }).notNull().default("active"),
+  title: text("title").notNull(),
+  body: text("body").notNull(),
+  sourceId: text("source_id").references(() => sources.id),
+  academicItemId: text("academic_item_id").references(() => academicItems.id),
+  firstSeenAt: integer("first_seen_at", { mode: "timestamp_ms" }).notNull(),
+  lastSeenAt: integer("last_seen_at", { mode: "timestamp_ms" }).notNull(),
+  acknowledgedAt: integer("acknowledged_at", { mode: "timestamp_ms" }),
+  resolvedAt: integer("resolved_at", { mode: "timestamp_ms" }),
+}, (table) => [
+  index("alerts_status_last_seen_idx").on(table.status, table.lastSeenAt),
+]);
 
 export const auditEvents = sqliteTable("audit_events", {
   id: text("id").primaryKey(),

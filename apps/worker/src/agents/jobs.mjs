@@ -89,7 +89,7 @@ async function executeJob(job) {
       kind: job.kind,
       system: jobSystem(job.kind, job.agentRole),
       prompt: jobPrompt(job),
-      maxTokens: Math.max(500, Math.min(4_000, job.tokenBudget ?? 2_400)),
+      maxTokens: Math.max(500, Math.min(1_500, job.tokenBudget ?? 1_500)),
       timeoutMs: 180_000,
     });
     return {

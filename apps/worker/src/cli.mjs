@@ -11,11 +11,34 @@ import { ensureAuthenticated } from "./authentication.mjs";
 import { credentialStatus, loadIamCredentials } from "./credentials.mjs";
 import { inspectSession, navigateToSource } from "./inspection.mjs";
 import { appendEvent, writeJson } from "./io.mjs";
-import { dashboardUrl, readSitesBypassToken, readWorkerToken, publishSyncResult } from "./publish.mjs";
+import {
+  claimQueuedSyncRequest,
+  dashboardUrl,
+  finishQueuedSyncRequest,
+  publishSyncResult,
+  publishWorkerHeartbeat,
+  readSitesBypassToken,
+  readWorkerToken,
+} from "./publish.mjs";
 import { providerStatus, runRoutedTask } from "./agents/providers.mjs";
 import { drainAgentJobs } from "./agents/jobs.mjs";
 import { syncSource } from "./sources/index.mjs";
 import { drainStagedUploads } from "./uploads.mjs";
+import { deliverAlerts } from "./notifications.mjs";
+
+const workerVersion = process.env.JARVIS_WORKER_VERSION || "0.1.0";
+
+function safeError(error) {
+  return String(error instanceof Error ? error.message : error)
+    .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, "[email redacted]")
+    .replace(/([?&](?:code|key|secret|token|password)=)[^&\s]+/gi, "$1[redacted]")
+    .replace(/\b[A-Za-z0-9_-]{48,}\b/g, "[secret redacted]")
+    .slice(0, 1_000);
+}
+
+function logWorker(event, detail = {}) {
+  console.log(JSON.stringify({ at: new Date().toISOString(), event, ...detail }));
+}
 
 function usage() {
   return `Academic Jarvis IAM worker
@@ -246,8 +269,9 @@ async function synchronize(source) {
     await writeJson(path.join(workerConfig.stateDirectory, "sync", source.key, "latest.json"), result);
     const publication = await publishSyncResult(source, result, startedAt).catch((error) => ({
       state: "failed",
-      error: error instanceof Error ? error.message : String(error),
+      error: safeError(error),
     }));
+    await deliverAlerts(publication.alerts).catch(() => undefined);
     await appendEvent(path.join(workerConfig.stateDirectory, "events.jsonl"), {
       type: "sync_completed",
       source: source.key,
@@ -259,15 +283,50 @@ async function synchronize(source) {
     });
     return { ...result, publication };
   } catch (error) {
+    const message = safeError(error);
+    const publication = await publishSyncResult(source, {
+      health: { state: "error", checkedAt: new Date().toISOString(), requiresUserAction: false },
+      items: [],
+      documents: [],
+      warnings: ["sync_failed"],
+      extractorState: "failed",
+    }, startedAt).catch((publishError) => ({ state: "failed", error: safeError(publishError) }));
+    await deliverAlerts(publication.alerts).catch(() => undefined);
     const failure = {
       source: source.key,
       state: "failed",
       startedAt,
       finishedAt: new Date().toISOString(),
-      error: error instanceof Error ? error.message : String(error),
+      error: message,
+      publication,
     };
     await appendEvent(path.join(workerConfig.stateDirectory, "events.jsonl"), { type: "sync_failed", ...failure });
     return failure;
+  }
+}
+
+async function processQueuedSyncRequest() {
+  const claim = await claimQueuedSyncRequest();
+  if (claim.state !== "claimed" || !claim.request) return { state: "idle" };
+  const request = claim.request;
+  try {
+    const results = await sync(request.source, true);
+    const failed = results.some((result) => result.state === "failed" || result.publication?.state === "failed");
+    const summary = results.map((result) => ({
+      source: result.source,
+      state: result.health?.state ?? result.state ?? "unknown",
+      published: result.publication?.state === "published",
+    }));
+    await finishQueuedSyncRequest(request, {
+      status: failed ? "failed" : "succeeded",
+      result: summary,
+      error: failed ? "One or more sources did not complete." : null,
+    });
+    return { state: failed ? "failed" : "succeeded", source: request.source };
+  } catch (error) {
+    const message = safeError(error);
+    await finishQueuedSyncRequest(request, { status: "failed", error: message }).catch(() => undefined);
+    return { state: "failed", source: request.source, error: message };
   }
 }
 
@@ -302,47 +361,102 @@ async function daemon() {
   process.once("SIGTERM", () => { stopping = true; });
 
   const credentials = await credentialStatus();
-  console.log(`Jarvis worker started; checking ${sourceKeys.length} sources every ${workerConfig.syncIntervalMinutes} minutes.`);
-  console.log(`Agent queue polling: every ${workerConfig.agentPollSeconds} seconds.`);
-  console.log("Private upload indexing: enabled with checksum verification.");
-  console.log(`Automatic IAM login: ${credentials.enabled ? `enabled (${credentials.storage})` : "disabled"}.`);
-  while (!stopping) {
-    const cycleStartedAt = new Date().toISOString();
-    const uploadsBeforeSync = await drainStagedUploads(2).catch((error) => [{
-      state: "failed",
-      error: error instanceof Error ? error.message : String(error),
-    }]);
-    const results = await sync("all", true);
-    const uploadsAfterSync = await drainStagedUploads(2).catch((error) => [{
-      state: "failed",
-      error: error instanceof Error ? error.message : String(error),
-    }]);
-    const agentJobs = await drainAgentJobs(3).catch((error) => [{
-      state: "failed",
-      error: error instanceof Error ? error.message : String(error),
-    }]);
-    await writeJson(path.join(workerConfig.stateDirectory, "heartbeat.json"), {
-      state: "running",
-      cycleStartedAt,
-      cycleFinishedAt: new Date().toISOString(),
-      nextCheckMinutes: workerConfig.syncIntervalMinutes,
-      sources: results.map((result) => ({ source: result.source, state: result.health?.state ?? result.state })),
-      uploads: [...uploadsBeforeSync, ...uploadsAfterSync],
-      agentJobs,
-    });
-
-    const waitUntil = Date.now() + workerConfig.syncIntervalMinutes * 60_000;
-    let nextAgentPoll = Date.now() + workerConfig.agentPollSeconds * 1_000;
-    while (!stopping && Date.now() < waitUntil) {
-      if (Date.now() >= nextAgentPoll) {
-        await drainStagedUploads(2).catch(() => undefined);
-        await drainAgentJobs(3).catch(() => undefined);
-        nextAgentPoll = Date.now() + workerConfig.agentPollSeconds * 1_000;
-      }
-      await pause(Math.min(5_000, waitUntil - Date.now()));
+  const heartbeat = {
+    state: "starting",
+    version: workerVersion,
+    cycleStartedAt: null,
+    cycleFinishedAt: null,
+    nextSyncAt: new Date().toISOString(),
+    lastError: null,
+  };
+  let heartbeatBusy = false;
+  const sendHeartbeat = async () => {
+    if (heartbeatBusy) return;
+    heartbeatBusy = true;
+    try {
+      heartbeat.providers = await providerStatus({ checkHermes: true });
+      await publishWorkerHeartbeat(heartbeat);
+    } catch (error) {
+      logWorker("heartbeat_failed", { error: safeError(error) });
+    } finally {
+      heartbeatBusy = false;
     }
+  };
+  await sendHeartbeat();
+  const heartbeatTimer = setInterval(() => { void sendHeartbeat(); }, workerConfig.heartbeatSeconds * 1_000);
+  logWorker("worker_started", {
+    sources: sourceKeys.length,
+    syncIntervalMinutes: workerConfig.syncIntervalMinutes,
+    syncRequestPollSeconds: workerConfig.syncRequestPollSeconds,
+    credentials: credentials.enabled ? credentials.storage : "disabled",
+  });
+  try {
+    while (!stopping) {
+      const cycleStartedAt = new Date().toISOString();
+      heartbeat.state = "running";
+      heartbeat.cycleStartedAt = cycleStartedAt;
+      heartbeat.lastError = null;
+      let results = [];
+      let uploadsBeforeSync = [];
+      let uploadsAfterSync = [];
+      let agentJobs = [];
+      try {
+        uploadsBeforeSync = await drainStagedUploads(2).catch((error) => [{ state: "failed", error: safeError(error) }]);
+        results = await sync("all", true);
+        uploadsAfterSync = await drainStagedUploads(2).catch((error) => [{ state: "failed", error: safeError(error) }]);
+        agentJobs = await drainAgentJobs(3).catch((error) => [{ state: "failed", error: safeError(error) }]);
+        const degraded = results.some((result) => (result.health?.state ?? result.state) !== "ready");
+        heartbeat.state = degraded ? "degraded" : "running";
+      } catch (error) {
+        heartbeat.state = "degraded";
+        heartbeat.lastError = safeError(error);
+        logWorker("cycle_failed", { error: heartbeat.lastError });
+      }
+      const cycleFinishedAt = new Date().toISOString();
+      const waitUntil = Date.now() + workerConfig.syncIntervalMinutes * 60_000;
+      heartbeat.cycleFinishedAt = cycleFinishedAt;
+      heartbeat.nextSyncAt = new Date(waitUntil).toISOString();
+      await writeJson(path.join(workerConfig.stateDirectory, "heartbeat.json"), {
+        state: heartbeat.state,
+        version: workerVersion,
+        cycleStartedAt,
+        cycleFinishedAt,
+        nextSyncAt: heartbeat.nextSyncAt,
+        sources: results.map((result) => ({ source: result.source, state: result.health?.state ?? result.state })),
+        uploads: [...uploadsBeforeSync, ...uploadsAfterSync],
+        agentJobs,
+      });
+      await sendHeartbeat();
+      logWorker("cycle_completed", {
+        state: heartbeat.state,
+        sources: results.map((result) => ({ source: result.source, state: result.health?.state ?? result.state })),
+        uploads: [...uploadsBeforeSync, ...uploadsAfterSync].map((upload) => upload.state),
+        agentJobs: agentJobs.map((job) => job.state),
+      });
+
+      let nextAgentPoll = Date.now() + workerConfig.agentPollSeconds * 1_000;
+      let nextSyncRequestPoll = Date.now();
+      while (!stopping && Date.now() < waitUntil) {
+        if (Date.now() >= nextSyncRequestPoll) {
+          const requested = await processQueuedSyncRequest().catch((error) => ({ state: "failed", error: safeError(error) }));
+          if (requested.state !== "idle") logWorker("requested_sync_completed", requested);
+          nextSyncRequestPoll = Date.now() + workerConfig.syncRequestPollSeconds * 1_000;
+        }
+        if (Date.now() >= nextAgentPoll) {
+          await drainStagedUploads(2).catch(() => undefined);
+          await drainAgentJobs(3).catch(() => undefined);
+          nextAgentPoll = Date.now() + workerConfig.agentPollSeconds * 1_000;
+        }
+        await pause(Math.min(5_000, Math.max(0, waitUntil - Date.now())));
+      }
+    }
+  } finally {
+    clearInterval(heartbeatTimer);
+    heartbeat.state = "stopping";
+    heartbeat.nextSyncAt = null;
+    await sendHeartbeat();
+    logWorker("worker_stopped");
   }
-  console.log("Jarvis worker stopped cleanly.");
 }
 
 const rawArguments = process.argv.slice(2);

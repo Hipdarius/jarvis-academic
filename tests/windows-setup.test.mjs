@@ -87,3 +87,12 @@ test("Windows bootstrap persists only non-secret settings", {
     await fs.rm(dataDirectory, { recursive: true, force: true });
   }
 });
+
+test("scheduled worker starts immediately and has retry and watchdog recovery", async () => {
+  const script = await fs.readFile(path.join(repositoryRoot, "scripts", "install-worker-task.ps1"), "utf8");
+  assert.match(script, /RestartCount\s*=\s*5/);
+  assert.match(script, /RestartInterval\s*=\s*"PT1M"/);
+  assert.match(script, /Repetition\.Interval\s*=\s*"PT15M"/);
+  assert.match(script, /GetTask\(\$taskName\).*Run\(\$null\)/s);
+  assert.match(script, /MultipleInstances\s*=\s*2/);
+});

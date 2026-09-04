@@ -7,6 +7,7 @@ import {
   ArrowRight,
   BookOpen,
   Bot,
+  Bell,
   BrainCircuit,
   CalendarDays,
   CalendarCheck2,
@@ -34,6 +35,7 @@ import {
   NotebookPen,
   MessageSquareText,
   Paperclip,
+  Pencil,
   Plus,
   RefreshCw,
   Search,
@@ -221,7 +223,21 @@ function EvidenceBadge({ item }: { item: DashboardItem }) {
   );
 }
 
-function AcademicItemRow({ item, compact = false }: { item: DashboardItem; compact?: boolean }) {
+function AcademicItemRow({
+  item,
+  compact = false,
+  pending = false,
+  onComplete,
+  onDismiss,
+  onEdit,
+}: {
+  item: DashboardItem;
+  compact?: boolean;
+  pending?: boolean;
+  onComplete?: (item: DashboardItem) => void;
+  onDismiss?: (item: DashboardItem) => void;
+  onEdit?: (item: DashboardItem) => void;
+}) {
   const Icon = item.type === "announcement" ? Inbox : item.type === "personal" ? Clock3 : FileText;
   return (
     <article className={`academic-row ${compact ? "compact" : ""}`}>
@@ -239,6 +255,13 @@ function AcademicItemRow({ item, compact = false }: { item: DashboardItem; compa
         <strong>{formatItemDate(item)}</strong>
         <span>{itemTypeLabel(item.type)}</span>
       </div>
+      {onComplete || onDismiss || onEdit ? (
+        <div className="academic-actions">
+          {onEdit ? <button aria-label={`Edit ${item.title}`} disabled={pending} onClick={() => onEdit(item)} title="Correct task" type="button"><Pencil size={15} /></button> : null}
+          {onComplete && item.type !== "announcement" ? <button aria-label={`Mark ${item.title} done`} disabled={pending} onClick={() => onComplete(item)} title="Mark done" type="button"><CheckCircle2 size={16} /></button> : null}
+          {onDismiss ? <button aria-label={`Dismiss ${item.title}`} disabled={pending} onClick={() => onDismiss(item)} title="Dismiss" type="button"><X size={16} /></button> : null}
+        </div>
+      ) : null}
     </article>
   );
 }
@@ -342,6 +365,15 @@ export default function Home() {
   const [uploadDeletePendingId, setUploadDeletePendingId] = useState<string | null>(null);
   const [uploadRetryPendingId, setUploadRetryPendingId] = useState<string | null>(null);
   const [knowledgeQuery, setKnowledgeQuery] = useState("");
+  const [syncRequestPending, setSyncRequestPending] = useState(false);
+  const [syncRequestNotice, setSyncRequestNotice] = useState("");
+  const [itemPendingId, setItemPendingId] = useState<string | null>(null);
+  const [editingItem, setEditingItem] = useState<DashboardItem | null>(null);
+  const [editDueAt, setEditDueAt] = useState("");
+  const [editSubject, setEditSubject] = useState("");
+  const [editNote, setEditNote] = useState("");
+  const [editStatus, setEditStatus] = useState<DashboardItem["status"]>("inbox");
+  const [alertPendingId, setAlertPendingId] = useState<string | null>(null);
 
   const loadState = useCallback(async (silent = false) => {
     if (!silent) setStateLoading(true);
@@ -386,7 +418,10 @@ export default function Home() {
         event.preventDefault();
         openCommand();
       }
-      if (event.key === "Escape") setCommandOpen(false);
+      if (event.key === "Escape") {
+        setCommandOpen(false);
+        setEditingItem(null);
+      }
     }
     window.addEventListener("keydown", handleKeyboard);
     return () => window.removeEventListener("keydown", handleKeyboard);
@@ -562,6 +597,84 @@ export default function Home() {
     }
   }
 
+  async function requestSchoolSync() {
+    if (syncRequestPending) return;
+    setSyncRequestPending(true);
+    setSyncRequestNotice("");
+    try {
+      const response = await fetch("/api/sync-requests", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ source: "all" }),
+      });
+      const payload = await response.json() as { error?: string; deduplicated?: boolean };
+      if (!response.ok) throw new Error(payload.error ?? "Jarvis could not request a school sync.");
+      setSyncRequestNotice(payload.deduplicated ? "A school refresh is already queued." : "School refresh queued. The HP worker should begin within 20 seconds.");
+      await loadState(true);
+    } catch (error) {
+      setSyncRequestNotice(error instanceof Error ? error.message : "Jarvis could not request a school sync.");
+    } finally {
+      setSyncRequestPending(false);
+    }
+  }
+
+  async function updateAcademicItem(item: DashboardItem, changes: Record<string, unknown>) {
+    if (itemPendingId) return;
+    setItemPendingId(item.id);
+    try {
+      const response = await fetch(`/api/items/${encodeURIComponent(item.id)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(changes),
+      });
+      const payload = await response.json() as { error?: string };
+      if (!response.ok) throw new Error(payload.error ?? "The task could not be updated.");
+      setEditingItem(null);
+      await loadState(true);
+    } catch (error) {
+      setStateError(error instanceof Error ? error.message : "The task could not be updated.");
+    } finally {
+      setItemPendingId(null);
+    }
+  }
+
+  function openItemEditor(item: DashboardItem) {
+    setEditingItem(item);
+    setEditDueAt(item.dueAt ? new Date(item.dueAt).toISOString().slice(0, 16) : "");
+    setEditSubject(item.subject === "General" ? "" : item.subject);
+    setEditNote(item.userNote ?? "");
+    setEditStatus(item.status);
+  }
+
+  async function saveItemCorrection(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!editingItem) return;
+    await updateAcademicItem(editingItem, {
+      dueAt: editDueAt ? new Date(editDueAt).toISOString() : null,
+      subject: editSubject.trim() || null,
+      userNote: editNote.trim() || null,
+      status: editStatus,
+    });
+  }
+
+  async function acknowledgeAlert(id: string) {
+    if (alertPendingId) return;
+    setAlertPendingId(id);
+    try {
+      const response = await fetch(`/api/alerts/${encodeURIComponent(id)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status: "acknowledged" }),
+      });
+      if (!response.ok) throw new Error("The alert could not be acknowledged.");
+      await loadState(true);
+    } catch (error) {
+      setStateError(error instanceof Error ? error.message : "The alert could not be acknowledged.");
+    } finally {
+      setAlertPendingId(null);
+    }
+  }
+
   async function approveProposal(id: string) {
     if (proposalConfirmId !== id) {
       setProposalConfirmId(id);
@@ -676,11 +789,13 @@ export default function Home() {
             <h1>{greeting}, Darius.</h1>
             <p>{stateLoading ? "Reading verified school data..." : `${healthySources} of ${totalSources} sources reporting. ${dashboardFreshness}`}</p>
           </div>
-          <button className="quiet-action" onClick={() => void loadState()} type="button">
-            <RefreshCw className={stateLoading ? "spin" : ""} size={16} />
-            Refresh
+          <button className="quiet-action" disabled={syncRequestPending} onClick={() => void requestSchoolSync()} type="button">
+            <RefreshCw className={syncRequestPending ? "spin" : ""} size={16} />
+            {syncRequestPending ? "Queuing" : "Sync now"}
           </button>
         </section>
+
+        {syncRequestNotice ? <div className="sync-notice" role="status"><RefreshCw size={16} /><span>{syncRequestNotice}</span></div> : null}
 
         {stateError ? (
           <div className="truth-banner" role="alert">
@@ -715,6 +830,50 @@ export default function Home() {
           <div><strong>{inboxItems.length}</strong><span>Inbox updates</span></div>
           <div><strong>{healthySources}/{totalSources}</strong><span>Sources live</span></div>
         </section>
+
+        <section className="top-three-band">
+          <div className="section-heading compact">
+            <div><p className="eyebrow">Daily focus</p><h2>Top 3 today</h2></div>
+            <span className="count-chip">{state?.topActions.length ?? 0}</span>
+          </div>
+          {state?.topActions.length ? (
+            <div className="top-action-list">
+              {state.topActions.map((action, index) => (
+                <article className="top-action-row" key={action.id}>
+                  <span className="action-rank">{index + 1}</span>
+                  <div><strong>{action.title}</strong><span>{action.subject} / {action.reason}</span></div>
+                  <button
+                    disabled={itemPendingId === action.academicItemId || studyPendingId === action.studyBlockId}
+                    onClick={() => action.kind === "study" && action.studyBlockId
+                      ? void changeStudyStatus(action.studyBlockId, action.status === "accepted" ? "done" : "accepted")
+                      : action.academicItemId
+                        ? (() => {
+                            const item = state.items.find((candidate) => candidate.id === action.academicItemId);
+                            return item ? void updateAcademicItem(item, { status: "done" }) : undefined;
+                          })()
+                        : undefined}
+                    type="button"
+                  >
+                    {action.kind === "study" && action.status !== "accepted" ? <CalendarCheck2 size={16} /> : <CheckCircle2 size={16} />}
+                    {action.kind === "study" && action.status !== "accepted" ? "Accept" : "Done"}
+                  </button>
+                </article>
+              ))}
+            </div>
+          ) : <p className="section-empty-copy">No actionable work is available yet. Jarvis keeps undated announcements out of this list.</p>}
+        </section>
+
+        {(state?.alerts ?? []).some((alert) => alert.status === "active") ? (
+          <section className="active-alerts" aria-label="Active alerts">
+            {(state?.alerts ?? []).filter((alert) => alert.status === "active").slice(0, 4).map((alert) => (
+              <article className={`alert-row ${alert.severity}`} key={alert.id}>
+                <Bell size={17} />
+                <div><strong>{alert.title}</strong><span>{alert.body}</span></div>
+                <button disabled={alertPendingId === alert.id} onClick={() => void acknowledgeAlert(alert.id)} type="button">Acknowledge</button>
+              </article>
+            ))}
+          </section>
+        ) : null}
 
         <section className="study-plan-band">
           <div className="section-heading compact">
@@ -751,7 +910,7 @@ export default function Home() {
             </div>
             {scheduledItems.length ? (
               <div className="academic-list">
-                {scheduledItems.slice(0, 6).map((item) => <AcademicItemRow item={item} key={item.id} />)}
+                {scheduledItems.slice(0, 6).map((item) => <AcademicItemRow item={item} key={item.id} pending={itemPendingId === item.id} onComplete={(selected) => void updateAcademicItem(selected, { status: "done" })} onDismiss={(selected) => void updateAcademicItem(selected, { dismissed: true })} onEdit={openItemEditor} />)}
               </div>
             ) : (
               <EmptyState
@@ -772,7 +931,7 @@ export default function Home() {
               </div>
               {inboxItems.length ? (
                 <div className="academic-list compact-list">
-                  {inboxItems.slice(0, 4).map((item) => <AcademicItemRow compact item={item} key={item.id} />)}
+                  {inboxItems.slice(0, 4).map((item) => <AcademicItemRow compact item={item} key={item.id} pending={itemPendingId === item.id} onComplete={(selected) => void updateAcademicItem(selected, { status: "done" })} onDismiss={(selected) => void updateAcademicItem(selected, { dismissed: true })} onEdit={openItemEditor} />)}
                 </div>
               ) : <p className="section-empty-copy">No undated updates are waiting.</p>}
             </section>
@@ -839,7 +998,7 @@ export default function Home() {
           </div>
           {filteredPlannerItems.length ? (
             <div className="academic-list">
-              {filteredPlannerItems.map((item) => <AcademicItemRow item={item} key={item.id} />)}
+              {filteredPlannerItems.map((item) => <AcademicItemRow item={item} key={item.id} pending={itemPendingId === item.id} onComplete={(selected) => void updateAcademicItem(selected, { status: "done" })} onDismiss={(selected) => void updateAcademicItem(selected, { dismissed: true })} onEdit={openItemEditor} />)}
             </div>
           ) : (
             <EmptyState
@@ -1217,17 +1376,27 @@ export default function Home() {
   function renderSystems() {
     const sources = state?.sources ?? [];
     const providers = state?.providers ?? [];
-    const workerLive = sources.some((source) => source.status === "healthy");
+    const workerLive = state?.worker.state === "running" || state?.worker.state === "degraded";
+    const latestSyncRequest = state?.syncRequests[0] ?? null;
     return (
       <section className="collection-page systems-page">
         <div className="page-heading">
-          <div><p className="eyebrow">Private worker and integrations</p><h1>Systems</h1><p>{workerLive ? `Worker online. ${formatFreshness(state?.generatedAt)}` : "No healthy worker source is reporting."}</p></div>
-          <button className="quiet-action" onClick={() => void loadState()} type="button"><RefreshCw className={stateLoading ? "spin" : ""} size={16} />Refresh</button>
+          <div><p className="eyebrow">Private worker and integrations</p><h1>Systems</h1><p>{workerLive ? `Worker ${state?.worker.state}. Heartbeat ${formatFreshness(state?.worker.heartbeatAt)}.` : "The HP worker is offline or has not reported yet."}</p></div>
+          <button className="quiet-action" disabled={syncRequestPending} onClick={() => void requestSchoolSync()} type="button"><RefreshCw className={syncRequestPending ? "spin" : ""} size={16} />{syncRequestPending ? "Queuing" : "Sync now"}</button>
         </div>
+
+        {syncRequestNotice ? <div className="sync-notice" role="status"><RefreshCw size={16} /><span>{syncRequestNotice}</span></div> : null}
 
         <section className={`worker-banner ${workerLive ? "live" : "waiting"}`}>
           <span>{workerLive ? <ShieldCheck size={21} /> : <Database size={21} />}</span>
-          <div><p className="eyebrow">Local worker</p><h2>{workerLive ? "School data is reporting securely." : "Connect the HP worker to begin."}</h2><p>{workerLive ? `${healthySources} source${healthySources === 1 ? "" : "s"} passed the latest health check.` : "Credentials stay in Windows DPAPI and are used only on allowlisted identity pages."}</p></div>
+          <div><p className="eyebrow">Local worker</p><h2>{workerLive ? `Worker ${state?.worker.state}` : "Connect the HP worker to begin."}</h2><p>{workerLive ? `${healthySources} source${healthySources === 1 ? "" : "s"} healthy / version ${state?.worker.version ?? "unknown"}.` : "Credentials stay in Windows DPAPI and are used only on allowlisted identity pages."}</p></div>
+        </section>
+
+        <section className="reliability-strip" aria-label="Worker reliability">
+          <div><strong>{state?.worker.freshnessMinutes ?? "-"}</strong><span>Heartbeat age, min</span></div>
+          <div><strong>{state?.worker.successRate7d === null || state?.worker.successRate7d === undefined ? "-" : `${state.worker.successRate7d}%`}</strong><span>7-day success</span></div>
+          <div><strong>{state?.worker.cycles7d ?? 0}</strong><span>Source reads, 7 days</span></div>
+          <div><strong>{latestSyncRequest?.status ?? "none"}</strong><span>Latest requested sync</span></div>
         </section>
 
         <div className="systems-grid">
@@ -1251,14 +1420,43 @@ export default function Home() {
               {providers.map((provider) => (
                 <div className="system-row" key={provider.id}>
                   <span className={`provider-mark ${provider.configured ? "configured" : ""}`}><Bot size={14} /></span>
-                  <div><strong>{provider.name}</strong><span>{provider.role}</span></div>
-                  <span className={`status-chip ${provider.configured ? "live" : "idle"}`}>{provider.configured ? "ready" : "not set"}</span>
+                  <div><strong>{provider.name}</strong><span>{provider.detail ?? provider.role}</span></div>
+                  <span className={`status-chip ${provider.health === "healthy" ? "live" : provider.health === "unreachable" ? "attention" : "idle"}`}>{provider.health === "healthy" ? "healthy" : provider.health === "unreachable" ? "unreachable" : provider.configured ? "configured" : "not set"}</span>
                 </div>
               ))}
               {!providers.length ? <p className="section-empty-copy">No provider status has been published.</p> : null}
             </div>
           </section>
+
+          <section className="data-section">
+            <div className="section-heading compact"><div><p className="eyebrow">Requested refreshes</p><h2>Sync history</h2></div><span className="count-chip">{state?.syncRequests.length ?? 0}</span></div>
+            <div className="system-list">
+              {(state?.syncRequests ?? []).slice(0, 6).map((request) => (
+                <div className="system-row" key={request.id}>
+                  <span className={`provider-mark ${request.status === "succeeded" ? "configured" : ""}`}><RefreshCw size={14} /></span>
+                  <div><strong>{request.source === "all" ? "All school sources" : request.source}</strong><span>{new Date(request.requestedAt).toLocaleString()}{request.error ? ` / ${request.error}` : ""}</span></div>
+                  <span className={`status-chip ${request.status === "succeeded" ? "live" : request.status === "failed" ? "attention" : "idle"}`}>{request.status}</span>
+                </div>
+              ))}
+              {!state?.syncRequests.length ? <p className="section-empty-copy">No manual school refresh has been requested.</p> : null}
+            </div>
+          </section>
         </div>
+
+        <section className="data-section alert-history-section">
+          <div className="section-heading compact"><div><p className="eyebrow">Meaningful changes only</p><h2>Alerts</h2></div><span className="count-chip">{state?.alerts.filter((alert) => alert.status === "active").length ?? 0} active</span></div>
+          <div className="alert-history-list">
+            {(state?.alerts ?? []).slice(0, 10).map((alert) => (
+              <article className={`alert-row ${alert.severity}`} key={alert.id}>
+                <Bell size={17} />
+                <div><strong>{alert.title}</strong><span>{alert.body}</span></div>
+                <span className={`status-chip ${alert.status === "active" ? "attention" : "idle"}`}>{alert.status}</span>
+                {alert.status === "active" ? <button disabled={alertPendingId === alert.id} onClick={() => void acknowledgeAlert(alert.id)} type="button">Acknowledge</button> : null}
+              </article>
+            ))}
+            {!state?.alerts.length ? <p className="section-empty-copy">No deadline or source alerts have been recorded.</p> : null}
+          </div>
+        </section>
 
         <div className="systems-grid setup-grid">
           <section className="data-section pairing-section">
@@ -1386,12 +1584,36 @@ export default function Home() {
           <button aria-label="Open Universal Command" className="command-trigger" onClick={() => openCommand()} title="Open Universal Command" type="button"><Search size={17} /><span>Search or capture anything</span></button>
           <span className={`live-badge ${attentionSources ? "partial" : healthySources ? "online" : "offline"}`}><i />{attentionSources ? `${attentionSources} needs attention` : `${healthySources}/${totalSources} sources live`}</span>
           <div className="top-actions">
-            <button className="icon-button" aria-label="Refresh school data" onClick={() => void loadState()} title="Refresh school data" type="button"><RefreshCw className={stateLoading ? "spin" : ""} size={18} /></button>
+            <button className="icon-button" aria-label="Sync school data" disabled={syncRequestPending} onClick={() => void requestSchoolSync()} title="Sync school data" type="button"><RefreshCw className={syncRequestPending ? "spin" : ""} size={18} /></button>
             <button aria-label="Capture with Universal Command" className="capture-button" onClick={() => openCommand()} title="Capture with Universal Command" type="button"><Sparkles size={16} /><span>Capture</span></button>
           </div>
         </header>
         <div className="content-wrap">{sectionContent}</div>
       </section>
+
+      {editingItem ? (
+        <div className="item-edit-overlay" onMouseDown={(event) => { if (event.currentTarget === event.target) setEditingItem(null); }}>
+          <section aria-labelledby="item-edit-title" aria-modal="true" className="item-edit-dialog" role="dialog">
+            <div className="command-heading">
+              <span className="command-mark"><Pencil size={18} /></span>
+              <div><p className="eyebrow">Personal correction</p><h2 id="item-edit-title">Edit task details</h2></div>
+              <button aria-label="Close task editor" onClick={() => setEditingItem(null)} title="Close" type="button"><X size={18} /></button>
+            </div>
+            <form className="item-edit-form" onSubmit={saveItemCorrection}>
+              <div className="item-edit-source"><strong>{editingItem.title}</strong><span>{editingItem.source} remains the original source</span></div>
+              <label><span>Deadline</span><input onChange={(event) => setEditDueAt(event.target.value)} type="datetime-local" value={editDueAt} /></label>
+              <label><span>Subject</span><input list="jarvis-subjects" maxLength={120} onChange={(event) => setEditSubject(event.target.value)} placeholder="Keep detected subject" value={editSubject} /></label>
+              <datalist id="jarvis-subjects">{state?.subjects.map((subject) => <option key={subject.id} value={subject.name} />)}</datalist>
+              <label><span>Status</span><select onChange={(event) => setEditStatus(event.target.value as DashboardItem["status"])} value={editStatus}><option value="inbox">Inbox</option><option value="planned">Planned</option><option value="in_progress">In progress</option><option value="done">Done</option><option value="cancelled">Cancelled</option></select></label>
+              <label><span>Private note</span><textarea maxLength={1000} onChange={(event) => setEditNote(event.target.value)} placeholder="Add context Jarvis should preserve" rows={3} value={editNote} /></label>
+              <div className="item-edit-actions">
+                <button className="secondary-action" onClick={() => setEditingItem(null)} type="button">Cancel</button>
+                <button className="primary-action" disabled={itemPendingId === editingItem.id} type="submit">{itemPendingId === editingItem.id ? <LoaderCircle className="spin" size={16} /> : <Check size={16} />}Save correction</button>
+              </div>
+            </form>
+          </section>
+        </div>
+      ) : null}
 
       {commandOpen ? (
         <div className="command-overlay" onMouseDown={(event) => { if (event.currentTarget === event.target) setCommandOpen(false); }}>

@@ -114,3 +114,32 @@ export async function publishSyncResult(source, result, startedAt) {
   }
   return { state: "published", ...(await response.json()) };
 }
+
+async function workerPost(pathname, body) {
+  const baseUrl = dashboardUrl();
+  const token = await readWorkerToken();
+  if (!baseUrl || !token) return { state: "not_configured" };
+  const response = await fetch(`${baseUrl}${pathname}`, {
+    method: "POST",
+    headers: await workerApiHeaders(token),
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(30_000),
+  });
+  if (!response.ok) throw new Error(`Dashboard worker request rejected with HTTP ${response.status}.`);
+  return response.json();
+}
+
+export function publishWorkerHeartbeat(input) {
+  return workerPost("/api/worker/heartbeat", input);
+}
+
+export function claimQueuedSyncRequest() {
+  return workerPost("/api/worker/sync-requests/claim", {});
+}
+
+export function finishQueuedSyncRequest(request, result) {
+  return workerPost(`/api/worker/sync-requests/${encodeURIComponent(request.id)}/result`, {
+    leaseId: request.leaseId,
+    ...result,
+  });
+}

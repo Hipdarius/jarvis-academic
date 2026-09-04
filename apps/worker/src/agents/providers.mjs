@@ -114,13 +114,36 @@ async function callAnthropic(provider, request) {
   return { text, usage: payload.usage ?? null };
 }
 
-export async function providerStatus() {
+async function hermesHealth(provider) {
+  if (!provider.baseUrl || !provider.apiKey || !provider.model) {
+    return { health: "not_configured", detail: null };
+  }
+  try {
+    const base = new URL(provider.baseUrl);
+    const response = await fetch(new URL("/health", base.origin), {
+      headers: { Authorization: `Bearer ${provider.apiKey}` },
+      signal: AbortSignal.timeout(5_000),
+    });
+    if (!response.ok) return { health: "unreachable", detail: `Health check returned HTTP ${response.status}.` };
+    return { health: "healthy", detail: "Private gateway responded." };
+  } catch {
+    return { health: "unreachable", detail: "Private gateway did not respond." };
+  }
+}
+
+export async function providerStatus({ checkHermes = false } = {}) {
   const providers = await configuredProviders();
-  return providerNames.map((id) => ({
-    id,
-    configured: Boolean(providers[id].baseUrl && providers[id].apiKey && providers[id].model),
-    model: providers[id].model,
-  }));
+  const hermes = checkHermes ? await hermesHealth(providers.hermes) : null;
+  return providerNames.map((id) => {
+    const configured = Boolean(providers[id].baseUrl && providers[id].apiKey && providers[id].model);
+    return {
+      id,
+      configured,
+      model: providers[id].model,
+      health: id === "hermes" ? hermes?.health ?? (configured ? "unknown" : "not_configured") : configured ? "unknown" : "not_configured",
+      detail: id === "hermes" ? hermes?.detail ?? null : null,
+    };
+  });
 }
 
 export async function runRoutedTask({ kind, system, prompt, maxTokens = 1_500, timeoutMs = 120_000 }) {

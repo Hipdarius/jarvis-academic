@@ -1,8 +1,9 @@
-import { and, asc, desc, eq, isNull, lt, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, isNull, lt, or, sql } from "drizzle-orm";
 
 import type { CommandIntent } from "@/packages/core/src/command-router";
 import { canonicalSubjectName, terminale1CISubjects } from "@/packages/core/src/academic-catalog";
 import type { DashboardState, ProviderStatus } from "@/packages/core/src/dashboard";
+import { buildTopActions } from "@/packages/core/src/daily-loop";
 import { rankDocumentEvidence } from "@/packages/core/src/document-retrieval";
 import { classifyKnowledgeFile } from "@/packages/core/src/knowledge-classifier";
 import type { NormalizedAcademicItem, SourceKind } from "@/packages/core/src/model";
@@ -14,6 +15,8 @@ import {
 import { getDb } from "./index";
 import {
   academicItems,
+  academicItemOverrides,
+  alerts,
   agentJobs,
   agentMessages,
   agentRuns,
@@ -27,6 +30,8 @@ import {
   studyBlocks,
   subjects,
   syncRuns,
+  syncRequests,
+  workerStatus,
   workerTokens,
 } from "./schema";
 
@@ -114,6 +119,16 @@ function safeStringArray(value: string | null) {
   }
 }
 
+function safeArray(value: string | null): unknown[] {
+  if (!value) return [];
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
 function safeSourceUrl(value: string | undefined | null, definition: (typeof sourceDefinitions)[number]) {
   if (!value) return null;
   try {
@@ -183,7 +198,8 @@ function configuredProviders(): ProviderStatus[] {
 
 export async function readDashboardState(): Promise<DashboardState> {
   const db = getDb();
-  const [itemRows, sourceRows, projectRows, noteRows, jobRows, documentRows, uploadRows, blockRows, runRows, messageRows, proposalRows, subjectRows] = await Promise.all([
+  const sevenDaysAgo = new Date(Date.now() - 7 * 86_400_000);
+  const [itemRows, sourceRows, projectRows, noteRows, jobRows, documentRows, uploadRows, blockRows, runRows, messageRows, proposalRows, subjectRows, overrideRows, workerRows, syncRequestRows, alertRows, recentSyncRows] = await Promise.all([
     db.select({
       item: academicItems,
       subjectName: subjects.name,
@@ -230,10 +246,16 @@ export async function readDashboardState(): Promise<DashboardState> {
     db.select().from(agentMessages).orderBy(desc(agentMessages.createdAt)).limit(100),
     db.select().from(improvementProposals).orderBy(desc(improvementProposals.createdAt)).limit(20),
     db.select().from(subjects),
+    db.select().from(academicItemOverrides),
+    db.select().from(workerStatus).limit(1),
+    db.select().from(syncRequests).orderBy(desc(syncRequests.requestedAt)).limit(12),
+    db.select().from(alerts).orderBy(desc(alerts.lastSeenAt)).limit(24),
+    db.select().from(syncRuns).where(gte(syncRuns.startedAt, sevenDaysAgo)).orderBy(desc(syncRuns.startedAt)).limit(2_000),
   ]);
 
   const storedSources = new Map(sourceRows.map((source) => [source.id, source]));
   const storedSubjects = new Map(subjectRows.map((subject) => [subject.id, subject]));
+  const storedOverrides = new Map(overrideRows.map((override) => [override.academicItemId, override]));
   const curriculumNames = new Set(terminale1CISubjects.map((subject) => subject.name));
   const dashboardSubjects = [
     ...terminale1CISubjects.map((subject) => ({
@@ -275,30 +297,98 @@ export async function readDashboardState(): Promise<DashboardState> {
       detail,
     };
   });
+  const dashboardItems = itemRows.map(({ item, subjectName, sourceName, sourceKind }) => {
+    const raw = safeJson(item.rawJson);
+    const override = storedOverrides.get(item.id);
+    const effectiveSubject = override?.subjectOverridden
+      ? storedSubjects.get(override.subjectId ?? "")?.name ?? "General"
+      : subjectName;
+    return {
+      id: item.id,
+      type: item.type,
+      title: item.title,
+      description: item.description,
+      subject: canonicalSubjectName(effectiveSubject),
+      source: sourceName,
+      sourceKind,
+      startsAt: iso(item.startsAt),
+      dueAt: override?.dueAtOverridden ? iso(override.dueAt) : iso(item.dueAt),
+      dueLabel: typeof raw?.dueLabel === "string" ? raw.dueLabel : null,
+      status: override?.status ?? item.status,
+      evidence: item.evidence,
+      confidence: item.confidence,
+      sourceUrl: item.sourceUrl,
+      userNote: override?.userNote ?? null,
+      dismissed: Boolean(override?.dismissedAt),
+    };
+  });
+  const dashboardStudyBlocks = blockRows.map(({ block, subjectName }) => ({
+    id: block.id,
+    academicItemId: block.academicItemId,
+    subject: canonicalSubjectName(subjectName),
+    title: block.title,
+    scheduledFor: block.scheduledFor,
+    durationMinutes: block.durationMinutes,
+    reason: block.reason,
+    status: block.status,
+    generatedBy: block.generatedBy,
+  }));
+  const storedWorker = workerRows[0];
+  const workerProviders = safeArray(storedWorker?.providerStatusesJson ?? null).filter((entry): entry is {
+    id: ProviderStatus["id"];
+    configured: boolean;
+    model: string | null;
+    health: "healthy" | "unreachable" | "unknown" | "not_configured";
+    detail: string | null;
+  } => Boolean(entry && typeof entry === "object" && "id" in entry && typeof entry.id === "string"));
+  const heartbeatAgeMs = storedWorker ? Date.now() - storedWorker.heartbeatAt.getTime() : null;
+  const successfulCycles = recentSyncRows.filter((run) => run.status === "succeeded").length;
+  const dashboardWorker = {
+    state: !storedWorker
+      ? "unconfigured" as const
+      : heartbeatAgeMs !== null && heartbeatAgeMs > 5 * 60_000
+        ? "offline" as const
+        : storedWorker.state === "stopping" ? "offline" as const : storedWorker.state,
+    version: storedWorker?.version ?? null,
+    heartbeatAt: iso(storedWorker?.heartbeatAt),
+    cycleStartedAt: iso(storedWorker?.cycleStartedAt),
+    cycleFinishedAt: iso(storedWorker?.cycleFinishedAt),
+    nextSyncAt: iso(storedWorker?.nextSyncAt),
+    freshnessMinutes: heartbeatAgeMs === null ? null : Math.max(0, Math.round(heartbeatAgeMs / 60_000)),
+    successRate7d: recentSyncRows.length ? Math.round((successfulCycles / recentSyncRows.length) * 1_000) / 10 : null,
+    cycles7d: recentSyncRows.length,
+    lastError: storedWorker?.lastError ?? null,
+    providers: workerProviders,
+  };
 
   return {
     mode: "live",
     generatedAt: new Date().toISOString(),
     subjects: dashboardSubjects,
-    items: itemRows.map(({ item, subjectName, sourceName, sourceKind }) => {
-      const raw = safeJson(item.rawJson);
-      return {
-        id: item.id,
-        type: item.type,
-        title: item.title,
-        description: item.description,
-        subject: canonicalSubjectName(subjectName),
-        source: sourceName,
-        sourceKind,
-        startsAt: iso(item.startsAt),
-        dueAt: iso(item.dueAt),
-        dueLabel: typeof raw?.dueLabel === "string" ? raw.dueLabel : null,
-        status: item.status,
-        evidence: item.evidence,
-        confidence: item.confidence,
-        sourceUrl: item.sourceUrl,
-      };
-    }),
+    items: dashboardItems,
+    topActions: buildTopActions(dashboardItems, dashboardStudyBlocks),
+    worker: dashboardWorker,
+    syncRequests: syncRequestRows.map((request) => ({
+      id: request.id,
+      source: request.source,
+      status: request.status,
+      requestedAt: request.requestedAt.toISOString(),
+      claimedAt: iso(request.claimedAt),
+      finishedAt: iso(request.finishedAt),
+      error: request.error,
+    })),
+    alerts: alertRows.map((alert) => ({
+      id: alert.id,
+      kind: alert.kind,
+      severity: alert.severity,
+      status: alert.status,
+      title: alert.title,
+      body: alert.body,
+      sourceId: alert.sourceId,
+      academicItemId: alert.academicItemId,
+      firstSeenAt: alert.firstSeenAt.toISOString(),
+      lastSeenAt: alert.lastSeenAt.toISOString(),
+    })),
     sources: dashboardSources,
     projects: projectRows.map((project) => ({
       id: project.id,
@@ -396,17 +486,7 @@ export async function readDashboardState(): Promise<DashboardState> {
         } : null,
       };
     }),
-    studyBlocks: blockRows.map(({ block, subjectName }) => ({
-      id: block.id,
-      academicItemId: block.academicItemId,
-      subject: canonicalSubjectName(subjectName),
-      title: block.title,
-      scheduledFor: block.scheduledFor,
-      durationMinutes: block.durationMinutes,
-      reason: block.reason,
-      status: block.status,
-      generatedBy: block.generatedBy,
-    })),
+    studyBlocks: dashboardStudyBlocks,
     agentRuns: runRows.map((run) => ({
       id: run.id,
       trigger: run.trigger,
@@ -453,8 +533,187 @@ export async function readDashboardState(): Promise<DashboardState> {
         createdAt: job.createdAt.toISOString(),
       };
     }),
-    providers: configuredProviders(),
+    providers: configuredProviders().map((provider) => {
+      const reported = workerProviders.find((entry) => entry.id === provider.id);
+      return reported ? { ...provider, configured: reported.configured, health: reported.health, detail: reported.detail } : provider;
+    }),
   };
+}
+
+export async function createSyncRequest(source: "all" | WorkerSourceKey) {
+  const db = getDb();
+  const active = await db.select().from(syncRequests).where(or(
+    eq(syncRequests.status, "queued"),
+    eq(syncRequests.status, "running"),
+  )).orderBy(asc(syncRequests.requestedAt)).limit(20);
+  const existing = active.find((request) => request.source === "all" || request.source === source);
+  if (existing) return { id: existing.id, source: existing.source, status: existing.status, requestedAt: existing.requestedAt.toISOString(), deduplicated: true };
+  const id = `sync-request:${crypto.randomUUID()}`;
+  const requestedAt = new Date();
+  await db.insert(syncRequests).values({ id, source, status: "queued", requestedAt });
+  await db.insert(auditEvents).values({
+    id: crypto.randomUUID(),
+    action: "sync_requested",
+    entityType: "sync_request",
+    entityId: id,
+    actor: "user",
+    detailsJson: JSON.stringify({ source }),
+    createdAt: requestedAt,
+  });
+  return { id, source, status: "queued" as const, requestedAt: requestedAt.toISOString(), deduplicated: false };
+}
+
+export async function claimSyncRequest() {
+  const db = getDb();
+  const staleBefore = new Date(Date.now() - 10 * 60_000);
+  await db.update(syncRequests).set({ status: "queued", leaseId: null, claimedAt: null, error: "Previous worker lease expired." })
+    .where(and(eq(syncRequests.status, "running"), lt(syncRequests.claimedAt, staleBefore)));
+  const request = (await db.select().from(syncRequests).where(eq(syncRequests.status, "queued"))
+    .orderBy(asc(syncRequests.requestedAt)).limit(1))[0];
+  if (!request) return null;
+  const leaseId = crypto.randomUUID();
+  const claimedAt = new Date();
+  await db.update(syncRequests).set({ status: "running", leaseId, claimedAt, error: null })
+    .where(and(eq(syncRequests.id, request.id), eq(syncRequests.status, "queued")));
+  const claimed = (await db.select().from(syncRequests).where(and(
+    eq(syncRequests.id, request.id),
+    eq(syncRequests.status, "running"),
+    eq(syncRequests.leaseId, leaseId),
+  )).limit(1))[0];
+  return claimed ? { id: claimed.id, source: claimed.source, leaseId, requestedAt: claimed.requestedAt.toISOString() } : null;
+}
+
+export async function finishSyncRequest(id: string, leaseId: string, input: { status: "succeeded" | "failed"; result?: unknown; error?: string | null }) {
+  const db = getDb();
+  const request = (await db.select().from(syncRequests).where(and(
+    eq(syncRequests.id, id),
+    eq(syncRequests.status, "running"),
+    eq(syncRequests.leaseId, leaseId),
+  )).limit(1))[0];
+  if (!request) return null;
+  const finishedAt = new Date();
+  await db.update(syncRequests).set({
+    status: input.status,
+    resultJson: input.result === undefined ? null : JSON.stringify(input.result).slice(0, 20_000),
+    error: input.error?.slice(0, 1_000) ?? null,
+    finishedAt,
+    leaseId: null,
+  }).where(eq(syncRequests.id, id));
+  await db.insert(auditEvents).values({
+    id: crypto.randomUUID(),
+    action: "sync_request_finished",
+    entityType: "sync_request",
+    entityId: id,
+    actor: "connector",
+    detailsJson: JSON.stringify({ status: input.status, source: request.source }),
+    createdAt: finishedAt,
+  });
+  return { id, status: input.status, finishedAt: finishedAt.toISOString() };
+}
+
+export async function recordWorkerHeartbeat(input: {
+  state: "starting" | "running" | "degraded" | "stopping";
+  version: string;
+  cycleStartedAt?: string | null;
+  cycleFinishedAt?: string | null;
+  nextSyncAt?: string | null;
+  lastError?: string | null;
+  providers?: unknown[];
+}) {
+  const db = getDb();
+  const now = new Date();
+  const values = {
+    id: "worker:primary",
+    state: input.state,
+    version: input.version.slice(0, 100),
+    cycleStartedAt: input.cycleStartedAt ? safeDate(input.cycleStartedAt) : null,
+    cycleFinishedAt: input.cycleFinishedAt ? safeDate(input.cycleFinishedAt) : null,
+    nextSyncAt: input.nextSyncAt ? safeDate(input.nextSyncAt) : null,
+    heartbeatAt: now,
+    lastError: input.lastError?.slice(0, 1_000) ?? null,
+    providerStatusesJson: JSON.stringify((input.providers ?? []).slice(0, 10).map((entry) => {
+      const value = entry && typeof entry === "object" ? entry as Record<string, unknown> : {};
+      const id = ["openai", "hermes", "nous", "openrouter", "anthropic"].includes(String(value.id)) ? String(value.id) : "";
+      return {
+        id,
+        configured: value.configured === true,
+        model: typeof value.model === "string" ? value.model.slice(0, 120) : null,
+        health: ["healthy", "unreachable", "unknown", "not_configured"].includes(String(value.health)) ? String(value.health) : "unknown",
+        detail: typeof value.detail === "string" ? value.detail.slice(0, 300) : null,
+      };
+    }).filter((entry) => entry.id)),
+  };
+  await db.insert(workerStatus).values(values).onConflictDoUpdate({ target: workerStatus.id, set: values });
+  return { heartbeatAt: now.toISOString() };
+}
+
+export async function updateAcademicItemOverride(id: string, input: {
+  status?: "inbox" | "planned" | "in_progress" | "done" | "cancelled";
+  dueAt?: string | null;
+  subject?: string | null;
+  userNote?: string | null;
+  dismissed?: boolean;
+}) {
+  const db = getDb();
+  const item = (await db.select().from(academicItems).where(eq(academicItems.id, id)).limit(1))[0];
+  if (!item) return null;
+  const existing = (await db.select().from(academicItemOverrides).where(eq(academicItemOverrides.academicItemId, id)).limit(1))[0];
+  const now = new Date();
+  const subjectId = input.subject === undefined
+    ? existing?.subjectId ?? null
+    : input.subject ? await ensureSubject(input.subject) : null;
+  const values = {
+    academicItemId: id,
+    status: input.status ?? existing?.status ?? null,
+    dueAt: input.dueAt === undefined ? existing?.dueAt ?? null : input.dueAt ? safeDate(input.dueAt) : null,
+    dueAtOverridden: input.dueAt === undefined ? existing?.dueAtOverridden ?? false : true,
+    subjectId,
+    subjectOverridden: input.subject === undefined ? existing?.subjectOverridden ?? false : true,
+    userNote: input.userNote === undefined ? existing?.userNote ?? null : input.userNote?.slice(0, 1_000) || null,
+    dismissedAt: input.dismissed === undefined ? existing?.dismissedAt ?? null : input.dismissed ? now : null,
+    updatedAt: now,
+  };
+  await db.insert(academicItemOverrides).values(values).onConflictDoUpdate({ target: academicItemOverrides.academicItemId, set: values });
+  if (values.status === "done" || values.status === "cancelled" || values.dismissedAt) {
+    await db.update(alerts).set({ status: "resolved", resolvedAt: now, lastSeenAt: now }).where(and(
+      eq(alerts.academicItemId, id),
+      eq(alerts.status, "active"),
+    ));
+  }
+  await db.insert(auditEvents).values({
+    id: crypto.randomUUID(),
+    action: "academic_item_overridden",
+    entityType: "academic_item",
+    entityId: id,
+    actor: "user",
+    detailsJson: JSON.stringify({ fields: Object.keys(input) }),
+    createdAt: now,
+  });
+  await refreshAdaptiveStudyPlan();
+  return { id, updatedAt: now.toISOString() };
+}
+
+export async function updateAlertStatus(id: string, status: "acknowledged" | "resolved") {
+  const db = getDb();
+  const existing = (await db.select().from(alerts).where(eq(alerts.id, id)).limit(1))[0];
+  if (!existing) return null;
+  const now = new Date();
+  await db.update(alerts).set({
+    status,
+    acknowledgedAt: status === "acknowledged" ? now : existing.acknowledgedAt,
+    resolvedAt: status === "resolved" ? now : existing.resolvedAt,
+    lastSeenAt: now,
+  }).where(eq(alerts.id, id));
+  await db.insert(auditEvents).values({
+    id: crypto.randomUUID(),
+    action: `alert_${status}`,
+    entityType: "alert",
+    entityId: id,
+    actor: "user",
+    detailsJson: JSON.stringify({ status }),
+    createdAt: now,
+  });
+  return { id, status };
 }
 
 async function activeSubmissionCandidates(): Promise<UploadMatchCandidate[]> {
@@ -939,6 +1198,23 @@ function parseJobInput(value: string) {
   }
 }
 
+function luxembourgDayStart(now = new Date()) {
+  const parts = new Intl.DateTimeFormat("en", {
+    timeZone: "Europe/Luxembourg",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(now);
+  const part = (type: Intl.DateTimeFormatPartTypes) => parts.find((entry) => entry.type === type)?.value ?? "";
+  const date = `${part("year")}-${part("month")}-${part("day")}`;
+  const offsetName = new Intl.DateTimeFormat("en", {
+    timeZone: "Europe/Luxembourg",
+    timeZoneName: "longOffset",
+  }).formatToParts(new Date(`${date}T12:00:00Z`)).find((entry) => entry.type === "timeZoneName")?.value ?? "GMT+00:00";
+  const offset = offsetName.replace("GMT", "") || "+00:00";
+  return new Date(`${date}T00:00:00${offset}`);
+}
+
 export async function claimNextAgentJob() {
   const db = getDb();
   const staleBefore = new Date(Date.now() - 30 * 60_000);
@@ -948,6 +1224,10 @@ export async function claimNextAgentJob() {
     provider: null,
     error: "Recovered after worker timeout.",
   }).where(and(eq(agentJobs.status, "running"), lt(agentJobs.startedAt, staleBefore)));
+  const todayClaims = await db.select({ id: agentJobs.id }).from(agentJobs)
+    .where(gte(agentJobs.startedAt, luxembourgDayStart()))
+    .limit(20);
+  if (todayClaims.length >= 20) return null;
   const candidates = await db.select().from(agentJobs)
     .where(eq(agentJobs.status, "queued"))
     .orderBy(desc(agentJobs.priority), asc(agentJobs.createdAt))
@@ -1154,18 +1434,27 @@ function safeStorageKey(value: string) {
 
 async function refreshAdaptiveStudyPlan() {
   const db = getDb();
-  const rows = await db.select({
-    item: academicItems,
-    subjectName: subjects.name,
-  }).from(academicItems).leftJoin(subjects, eq(academicItems.subjectId, subjects.id));
-  const planned = buildAdaptiveStudyBlocks(rows.map(({ item, subjectName }) => ({
-    id: item.id,
-    title: item.title,
-    subject: subjectName ?? "General",
-    type: item.type,
-    dueAt: iso(item.dueAt),
-    status: item.status,
-  })));
+  const [rows, overrideRows, subjectRows] = await Promise.all([
+    db.select({
+      item: academicItems,
+      subjectName: subjects.name,
+    }).from(academicItems).leftJoin(subjects, eq(academicItems.subjectId, subjects.id)),
+    db.select().from(academicItemOverrides),
+    db.select().from(subjects),
+  ]);
+  const overrides = new Map(overrideRows.map((override) => [override.academicItemId, override]));
+  const subjectNames = new Map(subjectRows.map((subject) => [subject.id, subject.name]));
+  const planned = buildAdaptiveStudyBlocks(rows.map(({ item, subjectName }) => {
+    const override = overrides.get(item.id);
+    return {
+      id: item.id,
+      title: item.title,
+      subject: override?.subjectOverridden ? subjectNames.get(override.subjectId ?? "") ?? "General" : subjectName ?? "General",
+      type: item.type,
+      dueAt: override?.dueAtOverridden ? iso(override.dueAt) : iso(item.dueAt),
+      status: override?.status ?? item.status,
+    };
+  }));
   const preserved = await db.select({ fingerprint: studyBlocks.sourceFingerprint }).from(studyBlocks)
     .where(sql`${studyBlocks.status} <> 'suggested'`);
   const preservedFingerprints = new Set(preserved.map((row) => row.fingerprint));
@@ -1173,10 +1462,11 @@ async function refreshAdaptiveStudyPlan() {
   const now = new Date();
   for (const block of planned.filter((candidate) => !preservedFingerprints.has(candidate.sourceFingerprint)).slice(0, 200)) {
     const sourceItem = rows.find(({ item }) => item.id === block.academicItemId);
+    const sourceOverride = sourceItem ? overrides.get(sourceItem.item.id) : null;
     await db.insert(studyBlocks).values({
       id: `study:${(await sha256(block.key)).slice(0, 40)}`,
       academicItemId: block.academicItemId,
-      subjectId: sourceItem?.item.subjectId ?? null,
+      subjectId: sourceOverride?.subjectOverridden ? sourceOverride.subjectId : sourceItem?.item.subjectId ?? null,
       title: block.title.slice(0, 500),
       scheduledFor: block.scheduledFor,
       durationMinutes: block.durationMinutes,
@@ -1189,6 +1479,68 @@ async function refreshAdaptiveStudyPlan() {
     }).onConflictDoNothing();
   }
   return planned.length;
+}
+
+type AlertPayload = {
+  id: string;
+  fingerprint: string;
+  severity: "info" | "warning" | "urgent";
+  title: string;
+  body: string;
+};
+
+async function upsertAlert(input: {
+  fingerprint: string;
+  kind: "assignment_due" | "deadline_changed" | "source_attention" | "worker_offline";
+  severity: "info" | "warning" | "urgent";
+  title: string;
+  body: string;
+  sourceId?: string | null;
+  academicItemId?: string | null;
+  now: Date;
+}): Promise<AlertPayload | null> {
+  const db = getDb();
+  const existing = (await db.select().from(alerts).where(eq(alerts.fingerprint, input.fingerprint)).limit(1))[0];
+  if (existing) {
+    const reactivate = existing.status === "resolved";
+    await db.update(alerts).set({
+      status: reactivate ? "active" : existing.status,
+      severity: input.severity,
+      title: input.title.slice(0, 300),
+      body: input.body.slice(0, 1_000),
+      lastSeenAt: input.now,
+      resolvedAt: reactivate ? null : existing.resolvedAt,
+      acknowledgedAt: reactivate ? null : existing.acknowledgedAt,
+    }).where(eq(alerts.id, existing.id));
+    return reactivate ? {
+      id: existing.id,
+      fingerprint: input.fingerprint,
+      severity: input.severity,
+      title: input.title.slice(0, 300),
+      body: input.body.slice(0, 1_000),
+    } : null;
+  }
+  const id = `alert:${crypto.randomUUID()}`;
+  await db.insert(alerts).values({
+    id,
+    fingerprint: input.fingerprint,
+    kind: input.kind,
+    severity: input.severity,
+    status: "active",
+    title: input.title.slice(0, 300),
+    body: input.body.slice(0, 1_000),
+    sourceId: input.sourceId ?? null,
+    academicItemId: input.academicItemId ?? null,
+    firstSeenAt: input.now,
+    lastSeenAt: input.now,
+  });
+  return { id, fingerprint: input.fingerprint, severity: input.severity, title: input.title.slice(0, 300), body: input.body.slice(0, 1_000) };
+}
+
+function deadlineAlertWindow(dueAt: Date | null, now: Date) {
+  if (!dueAt) return false;
+  const delta = dueAt.getTime() - now.getTime();
+  return delta >= -24 * 3_600_000 && delta <= 72 * 3_600_000;
 }
 
 async function maybeQueueConnectorImprovement(definition: (typeof sourceDefinitions)[number]) {
@@ -1231,6 +1583,7 @@ export async function ingestWorkerSync(payload: WorkerSyncPayload) {
   const finishedAt = safeDate(payload.finishedAt, now);
   const warnings = (payload.warnings ?? []).filter((warning): warning is string => typeof warning === "string").slice(0, 100);
   const syncRunId = crypto.randomUUID();
+  const newAlerts: AlertPayload[] = [];
 
   const updateValues = {
     status,
@@ -1290,6 +1643,7 @@ export async function ingestWorkerSync(payload: WorkerSyncPayload) {
       eq(academicItems.sourceExternalId, item.sourceExternalId.slice(0, 300)),
     )).limit(1))[0];
     const changed = !existing || existing.sourceSnapshotHash !== sourceSnapshotHash;
+    const nextDueAt = item.dueAt ? safeDate(item.dueAt) : null;
     const incomingStatus = item.status ?? "inbox";
     const resolvedStatus = incomingStatus === "done" || !existing || !["done", "cancelled"].includes(existing.status)
       ? incomingStatus
@@ -1303,7 +1657,7 @@ export async function ingestWorkerSync(payload: WorkerSyncPayload) {
       title: item.title.slice(0, 500),
       description: item.description?.slice(0, 4_000) ?? null,
       startsAt: item.startsAt ? safeDate(item.startsAt) : null,
-      dueAt: item.dueAt ? safeDate(item.dueAt) : null,
+      dueAt: nextDueAt,
       status: resolvedStatus,
       evidence: item.evidence,
       confidence: Math.max(0, Math.min(100, Math.round(item.confidence))),
@@ -1344,6 +1698,28 @@ export async function ingestWorkerSync(payload: WorkerSyncPayload) {
         dueLabel: safeJson(rawJson)?.dueLabel ?? null,
         status: resolvedStatus,
       });
+    }
+    const storedItemId = existing?.id ?? values.id;
+    const deadlineChanged = Boolean(existing && existing.dueAt?.getTime() !== nextDueAt?.getTime());
+    const newWorkDueSoon = !existing && deadlineAlertWindow(nextDueAt, now);
+    if (deadlineChanged || newWorkDueSoon) {
+      if (deadlineChanged) {
+        await db.update(alerts).set({ status: "resolved", resolvedAt: now, lastSeenAt: now }).where(and(
+          eq(alerts.academicItemId, storedItemId),
+          eq(alerts.status, "active"),
+        ));
+      }
+      const alert = await upsertAlert({
+        fingerprint: `${deadlineChanged ? "deadline" : "assignment"}:${storedItemId}:${nextDueAt?.toISOString() ?? "removed"}`,
+        kind: deadlineChanged ? "deadline_changed" : "assignment_due",
+        severity: nextDueAt && deadlineAlertWindow(nextDueAt, now) && nextDueAt.getTime() - now.getTime() <= 24 * 3_600_000 ? "urgent" : "warning",
+        title: deadlineChanged ? `Deadline changed: ${item.title}` : `New work due soon: ${item.title}`,
+        body: `${item.subject ?? "General"} / ${definition.name} / ${nextDueAt ? `due ${nextDueAt.toISOString()}` : "deadline removed by source"}`,
+        sourceId: definition.id,
+        academicItemId: storedItemId,
+        now,
+      });
+      if (alert) newAlerts.push(alert);
     }
   }
 
@@ -1414,6 +1790,28 @@ export async function ingestWorkerSync(payload: WorkerSyncPayload) {
 
   const studyBlockCount = await refreshAdaptiveStudyPlan();
   await db.update(syncRuns).set({ changedCount }).where(eq(syncRuns.id, syncRunId));
+  const latestSourceRuns = await db.select().from(syncRuns)
+    .where(eq(syncRuns.sourceId, definition.id))
+    .orderBy(desc(syncRuns.startedAt))
+    .limit(2);
+  if (status === "healthy") {
+    await db.update(alerts).set({ status: "resolved", resolvedAt: now, lastSeenAt: now }).where(and(
+      eq(alerts.kind, "source_attention"),
+      eq(alerts.sourceId, definition.id),
+      eq(alerts.status, "active"),
+    ));
+  } else if (latestSourceRuns.length === 2 && latestSourceRuns.every((run) => run.status === "failed")) {
+    const alert = await upsertAlert({
+      fingerprint: `source-attention:${definition.id}`,
+      kind: "source_attention",
+      severity: "warning",
+      title: `${definition.name} needs attention`,
+      body: `Two consecutive reads did not complete successfully. Current state: ${payload.health.state}.`,
+      sourceId: definition.id,
+      now,
+    });
+    if (alert) newAlerts.push(alert);
+  }
   await db.insert(auditEvents).values({
     id: crypto.randomUUID(),
     action: "worker_sync",
@@ -1453,7 +1851,7 @@ export async function ingestWorkerSync(payload: WorkerSyncPayload) {
   }
   await maybeQueueConnectorImprovement(definition);
 
-  return { changedCount, documentCount, studyBlockCount, agentRunId, source: payload.source, status, syncRunId };
+  return { changedCount, documentCount, studyBlockCount, agentRunId, source: payload.source, status, syncRunId, alerts: newAlerts };
 }
 
 export async function createSubjectChatJob(message: string, subject: string | null) {

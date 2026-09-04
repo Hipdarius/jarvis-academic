@@ -13,7 +13,7 @@ export function dashboardItemDate(item: DashboardItem) {
 
 export function activeDashboardItems(items: DashboardItem[]) {
   return items
-    .filter((item) => !closedStatuses.has(item.status))
+    .filter((item) => !closedStatuses.has(item.status) && !item.dismissed)
     .sort((a, b) => {
       const first = dashboardItemDate(a)?.getTime() ?? Number.MAX_SAFE_INTEGER;
       const second = dashboardItemDate(b)?.getTime() ?? Number.MAX_SAFE_INTEGER;

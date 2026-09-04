@@ -49,7 +49,11 @@ Implemented:
 - root-level Windows setup and `jarvis` commands that never require navigating
   into `apps/worker`;
 - persistent local configuration, DPAPI IAM storage, a protected worker-token
-  file, headed authentication troubleshooting, and an optional logon task;
+  file, headed authentication troubleshooting, and a self-recovering Windows task;
+- queued on-demand syncs, 60-second worker heartbeats, bounded rotating logs,
+  seven-day reliability metrics, and deduplicated deadline/source alerts;
+- a deterministic Top 3 daily list plus persistent task corrections, completion,
+  cancellation, dismissal, and 120-minute study-plan actions;
 - Synology DS1522+ Compose foundation and ignored secret files.
 
 Still requires live-school validation:
@@ -178,7 +182,8 @@ needs another headed authentication pass; an empty healthy source means the
 extractor found no qualifying current records and does not fabricate any.
 
 Start the worker in the current terminal, or install a current-user Task
-Scheduler entry that starts at Windows sign-in:
+Scheduler entry that starts immediately and at Windows sign-in, retries five
+times after a crash, and checks every 15 minutes that the daemon still exists:
 
 ```powershell
 .\scripts\jarvis.ps1 start
@@ -188,8 +193,10 @@ Scheduler entry that starts at Windows sign-in:
 
 Remove only the automatic-start task with `.\scripts\jarvis.ps1 uninstall`.
 This does not delete credentials, browser sessions, or school data. The daemon
-checks school sources every 30 minutes and the private-upload and agent queues
-every 60 seconds by default.
+checks school sources every 30 minutes, listens for dashboard sync requests
+every 15 seconds, publishes a heartbeat every 60 seconds, and rotates five
+5 MB worker logs. AI output is capped at 1,500 tokens per job and the hosted
+queue claims at most 20 jobs per Luxembourg day.
 
 Real source changes queue one bounded curator -> planner -> reviewer run by
 default. Set `JARVIS_AGENT_AUTO_TRIAGE=false` in the private worker environment
@@ -350,6 +357,34 @@ worker; do not set both unless they contain the same gateway key.
 Do **not** mount the IAM password, browser profile, worker token, or school-file
 directory into the Hermes container. Hermes can have powerful tools; isolation
 keeps those tools outside the credential boundary.
+
+Hermes remains disabled until Systems shows at least 95% successful scheduled
+reads for seven days and fresh-data age stays below 45 minutes at the 95th
+percentile. Prepare its isolated NAS volume without starting the gateway:
+
+```bash
+docker compose --profile hermes run --rm hermes setup --portal
+docker compose --profile hermes run --rm hermes tools disable terminal file browser code_execution delegation messaging cronjob
+docker compose --profile hermes run --rm hermes tools list
+```
+
+The final command is a required capability check: each listed powerful toolset
+must report disabled before startup. Then set a random `HERMES_API_SERVER_KEY`,
+bind `HERMES_LAN_BIND_IP` to the NAS private-LAN address, and allow port 8642
+only from the HP in the NAS firewall. The Compose profile mounts only
+`hermes-data`; it receives no school files, browser state, repositories, Docker
+socket, or Jarvis credentials.
+
+After the seven-day gate passes, start and verify the private gateway:
+
+```bash
+docker compose --profile hermes up -d hermes
+curl -H "Authorization: Bearer $HERMES_API_SERVER_KEY" http://127.0.0.1:8642/health
+```
+
+Configure the HP worker with the NAS `/v1` URL and a protected
+`JARVIS_HERMES_API_KEY_FILE`. Keep Hermes out of the provider routes until its
+20-question, four-subject citation evaluation passes.
 
 ## Synology DS1522+
 

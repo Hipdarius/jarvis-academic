@@ -93,6 +93,16 @@ try {
     $logDirectory = Join-Path $dataRoot "logs"
     New-Item -ItemType Directory -Force -Path $logDirectory | Out-Null
     $logFile = Join-Path $logDirectory "worker.log"
+    $maxLogBytes = 5MB
+    $retainedLogs = 5
+    if ((Test-Path -LiteralPath $logFile) -and (Get-Item -LiteralPath $logFile).Length -ge $maxLogBytes) {
+      for ($index = $retainedLogs - 1; $index -ge 1; $index--) {
+        $older = "$logFile.$index"
+        $newer = "$logFile.$($index + 1)"
+        if (Test-Path -LiteralPath $older) { Move-Item -LiteralPath $older -Destination $newer -Force }
+      }
+      Move-Item -LiteralPath $logFile -Destination "$logFile.1" -Force
+    }
     & $node @nodeArguments *>> $logFile
   } else {
     & $node @nodeArguments

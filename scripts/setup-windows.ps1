@@ -64,7 +64,10 @@ $environmentValues = [ordered]@{
   JARVIS_SCHOOL_FILES_DIR = ConvertTo-JarvisEnvValue $schoolFilesDirectory
   JARVIS_TIMEZONE = "Europe/Luxembourg"
   JARVIS_SYNC_INTERVAL_MINUTES = "30"
+  JARVIS_SYNC_REQUEST_POLL_SECONDS = "15"
+  JARVIS_HEARTBEAT_SECONDS = "60"
   JARVIS_AGENT_POLL_SECONDS = "60"
+  JARVIS_AGENT_DAILY_JOB_LIMIT = "20"
   JARVIS_AGENT_AUTO_TRIAGE = "true"
 }
 Update-JarvisEnvironmentFile -Path $configFile -Values $environmentValues -Header "# Academic Jarvis local worker configuration. This file contains paths and settings, not passwords or tokens."

@@ -56,6 +56,8 @@ export const workerConfig = {
   timezone: process.env.JARVIS_TIMEZONE || "Europe/Luxembourg",
   syncIntervalMinutes: Math.max(5, Number.parseInt(process.env.JARVIS_SYNC_INTERVAL_MINUTES || "30", 10) || 30),
   agentPollSeconds: Math.max(15, Number.parseInt(process.env.JARVIS_AGENT_POLL_SECONDS || "60", 10) || 60),
+  syncRequestPollSeconds: Math.max(5, Number.parseInt(process.env.JARVIS_SYNC_REQUEST_POLL_SECONDS || "15", 10) || 15),
+  heartbeatSeconds: Math.max(30, Number.parseInt(process.env.JARVIS_HEARTBEAT_SECONDS || "60", 10) || 60),
   captureScreenshots: process.env.JARVIS_CAPTURE_SCREENSHOTS === "true",
 };
 

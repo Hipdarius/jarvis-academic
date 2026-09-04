@@ -15,6 +15,65 @@ export type DashboardItem = {
   evidence: EvidenceLevel;
   confidence: number;
   sourceUrl: string | null;
+  userNote: string | null;
+  dismissed: boolean;
+};
+
+export type DashboardTopAction = {
+  id: string;
+  kind: "item" | "study";
+  academicItemId: string | null;
+  studyBlockId: string | null;
+  title: string;
+  subject: string;
+  dueAt: string | null;
+  scheduledFor: string | null;
+  status: string;
+  reason: string;
+  score: number;
+};
+
+export type DashboardWorkerStatus = {
+  state: "unconfigured" | "starting" | "running" | "degraded" | "offline";
+  version: string | null;
+  heartbeatAt: string | null;
+  cycleStartedAt: string | null;
+  cycleFinishedAt: string | null;
+  nextSyncAt: string | null;
+  freshnessMinutes: number | null;
+  successRate7d: number | null;
+  cycles7d: number;
+  lastError: string | null;
+  providers: Array<{
+    id: "openai" | "hermes" | "nous" | "openrouter" | "anthropic";
+    configured: boolean;
+    model: string | null;
+    health: "healthy" | "unreachable" | "unknown" | "not_configured";
+    detail: string | null;
+  }>;
+};
+
+export type DashboardSyncRequest = {
+  id: string;
+  source: "all" | "webuntis" | "teams" | "academy" | "edumoodle";
+  status: "queued" | "running" | "succeeded" | "failed";
+  requestedAt: string;
+  claimedAt: string | null;
+  finishedAt: string | null;
+  error: string | null;
+};
+
+export type DashboardAlert = {
+  id: string;
+  kind: "assignment_due" | "deadline_changed" | "source_attention" | "worker_offline";
+  severity: "info" | "warning" | "urgent";
+  status: "active" | "acknowledged" | "resolved";
+  title: string;
+  body: string;
+  sourceId: string | null;
+  academicItemId: string | null;
+  firstSeenAt: string;
+  lastSeenAt: string;
 };
 
 export type DashboardSource = {
@@ -49,6 +108,8 @@ export type ProviderStatus = {
   name: string;
   configured: boolean;
   role: string;
+  health?: "healthy" | "unreachable" | "unknown" | "not_configured";
+  detail?: string | null;
 };
 
 export type DashboardDocument = {
@@ -157,6 +218,10 @@ export type DashboardState = {
   generatedAt: string;
   subjects: DashboardSubject[];
   items: DashboardItem[];
+  topActions: DashboardTopAction[];
+  worker: DashboardWorkerStatus;
+  syncRequests: DashboardSyncRequest[];
+  alerts: DashboardAlert[];
   sources: DashboardSource[];
   projects: DashboardProject[];
   notes: DashboardNote[];
