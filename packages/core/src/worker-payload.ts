@@ -50,6 +50,7 @@ function validDocument(value: unknown) {
     && optionalString(value.subject, 300)
     && optionalString(value.mimeType, 120)
     && optionalString(value.sourceUrl, 2_000)
+    && optionalString(value.sourcePath, 1_000)
     && optionalString(value.extractedText, 100_000)
     && (value.size === undefined || (typeof value.size === "number" && Number.isInteger(value.size) && value.size >= 0 && value.size <= 100 * 1_024 * 1_024));
 }

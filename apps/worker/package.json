@@ -22,6 +22,11 @@
   },
   "dependencies": {
     "pdfjs-dist": "6.2.108",
-    "playwright": "^1.55.1"
+    "playwright": "^1.55.1",
+    "sax": "1.6.1",
+    "yauzl": "3.4.0"
+  },
+  "devDependencies": {
+    "yazl": "3.3.1"
   }
 }

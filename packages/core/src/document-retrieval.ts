@@ -61,14 +61,14 @@ function boundedChunks(value: string, locator: string, maximum = 1_400) {
 }
 
 function documentChunks(text: string) {
-  const pagePattern = /^\[Page (\d+)\]\s*$/gim;
-  const matches = [...text.matchAll(pagePattern)];
+  const markerPattern = /^\[(Page|Slide|Sheet)\s+([^\]]+)\]\s*$/gim;
+  const matches = [...text.matchAll(markerPattern)];
   if (!matches.length) return boundedChunks(text, "document");
   const chunks: Array<{ text: string; locator: string }> = [];
   for (let index = 0; index < matches.length; index += 1) {
     const start = (matches[index].index ?? 0) + matches[index][0].length;
     const end = matches[index + 1]?.index ?? text.length;
-    chunks.push(...boundedChunks(text.slice(start, end), `page ${matches[index][1]}`));
+    chunks.push(...boundedChunks(text.slice(start, end), `${matches[index][1].toLowerCase()} ${matches[index][2].trim()}`));
   }
   return chunks;
 }

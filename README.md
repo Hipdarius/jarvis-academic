@@ -31,11 +31,17 @@ Implemented:
 - private dashboard file intake in R2 with format checks, SHA-256 integrity,
   deterministic current-assignment suggestions, private download, and deletion;
 - leased local-worker processing for private uploads, including a second size and
-  checksum verification, PDF/text extraction, retryable status, and visible
-  indexed/waiting/attention counts;
+  checksum verification, PDF/text/modern Office extraction, retryable status,
+  and visible indexed/waiting/attention counts;
 - adaptive study suggestions built only from verified, dated school items;
-- subject workspaces with assignments, source and personal files, study blocks,
-  and query-ranked chat citations that retain PDF page locators;
+- the fixed terminale classique 1CI curriculum (12 courses / 31 weekly lessons)
+  grouped by languages, specialization, and general education;
+- subject workspaces plus a searchable Knowledge tree organized by subject,
+  school year/semester, and a dynamic source-folder, chapter, and topic path;
+- automatic file classification that prefers linked assignments and existing
+  Teams/Moodle folders, then uses filenames and extracted text conservatively;
+- assignments, source and personal files, study blocks, and query-ranked chat
+  citations that retain PDF page, PowerPoint slide, and spreadsheet sheet locators;
 - persistent, budgeted curator, planner, tutor, reviewer, and improver runs,
   including visible handoffs and provider/token audit data;
 - optional code-agent branch preparation behind two independent approval
@@ -57,7 +63,8 @@ Still requires live-school validation:
   needs a deliberate export/share workflow;
 - portal uploads and submissions remain disabled until a preview,
   approval-and-receipt flow is built and tested; dashboard staging is live;
-- scanned-image PDF OCR and Office-document extraction are not implemented yet.
+- scanned-image PDF and image OCR are not implemented yet; legacy Office and
+  OpenDocument formats remain stored without fabricated extraction.
 
 ## Security model
 
@@ -198,8 +205,11 @@ always-running model. Its main flow is:
 2. Source adapters turn visible WebUntis, Teams, and Moodle evidence into the
    shared academic schema. Uncertain dates and assignments remain blank rather
    than being guessed.
-3. Teacher files are downloaded into protected local storage, checksummed, and
-   text-extracted when supported. Digital PDF excerpts retain page markers.
+3. Teacher files are downloaded automatically into protected local storage,
+   checksummed, and text-extracted when supported. Their Teams/Moodle course and
+   section path is preserved for subject/topic organization. Digital PDFs retain
+   page markers, PowerPoints retain slide markers, and spreadsheets retain sheet
+   names and cell labels.
 4. Files added through Knowledge stay in private R2. The worker claims them with
    a short-lived lease, verifies size and SHA-256 again, and returns only bounded
    extracted text and processing metadata.
@@ -223,14 +233,19 @@ Moodle host. Archived courses are deprioritized unless they contain recent
 work. Selector failures produce warnings and attention states instead of fake
 tasks.
 
-Digital PDFs and plain-text formats can now be parsed locally for subject chat
-and agent citations. Jarvis ranks bounded excerpts against each question and
-keeps PDF page locators in the citation record. The same processing applies to
-files added through Knowledge; unmatched indexed files appear under General.
+Digital PDFs, plain-text formats, DOCX, PPTX, and XLSX can now be parsed locally
+for subject chat and agent citations. The modern Office path validates the
+declared package type and bounds archive entries, decompressed bytes, and
+compression ratios before strict XML parsing. Jarvis ranks bounded excerpts
+against each question and keeps PDF page, PowerPoint slide, and spreadsheet
+sheet locators in the citation record. The same processing applies to files
+added through Knowledge. Jarvis sorts files under the 1CI subject catalog using
+assignment and source-folder evidence first, then filename and extracted text;
+uncertain files remain visibly `General / Unclassified` instead of being guessed.
 A scanned PDF can still contain no machine-readable text. OCR, diagrams,
-handwriting, and reliable Office-document extraction remain a separate,
-sandboxed document-intelligence step. Jarvis stores those files and labels them
-`stored only`; it does not claim to understand content it did not extract.
+handwriting, legacy Office formats, and OpenDocument extraction remain separate
+document-intelligence steps. Jarvis stores those files and labels them `stored
+only`; it does not claim to understand content it did not extract.
 
 Individual setup pieces can be repeated safely with
 `.\scripts\jarvis.ps1 credentials`, `.\scripts\jarvis.ps1 token`, and

@@ -60,7 +60,21 @@ export type DashboardDocument = {
   academicItemId: string | null;
   sourceUrl: string | null;
   extracted: boolean;
+  sourcePath: string | null;
+  academicPeriod: string;
+  topicPath: string[];
+  classificationConfidence: number | null;
+  classificationReason: string | null;
   createdAt: string;
+};
+
+export type DashboardSubject = {
+  id: string;
+  name: string;
+  officialName: string | null;
+  group: "Languages and mathematics" | "Specialization" | "General education" | "Observed";
+  weeklyLessons: number | null;
+  curriculum: boolean;
 };
 
 export type DashboardStagedUpload = {
@@ -79,6 +93,11 @@ export type DashboardStagedUpload = {
   processingStartedAt: string | null;
   processingFinishedAt: string | null;
   createdAt: string;
+  subject: string;
+  academicPeriod: string;
+  topicPath: string[];
+  classificationConfidence: number | null;
+  classificationReason: string | null;
   destination: {
     academicItemId: string;
     title: string;
@@ -136,6 +155,7 @@ export type DashboardImprovementProposal = {
 export type DashboardState = {
   mode: "live" | "database_unavailable";
   generatedAt: string;
+  subjects: DashboardSubject[];
   items: DashboardItem[];
   sources: DashboardSource[];
   projects: DashboardProject[];

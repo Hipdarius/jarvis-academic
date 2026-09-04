@@ -32,6 +32,6 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Invalid worker sync payload." }, { status: 400 });
   }
 
-  const result = await ingestWorkerSync(body);
+  const result = await ingestWorkerSync(body as WorkerSyncPayload);
   return NextResponse.json(result, { headers: { "Cache-Control": "no-store" } });
 }

@@ -6,6 +6,7 @@ import { getDocument } from "pdfjs-dist/legacy/build/pdf.mjs";
 import { workerConfig } from "./config.mjs";
 import { redactText, redactUrl } from "./inspection.mjs";
 import { ensurePrivateDirectory } from "./io.mjs";
+import { extractOpenXmlText } from "./openxml.mjs";
 
 const textExtensions = new Set([".csv", ".html", ".htm", ".json", ".md", ".rtf", ".txt", ".xml"]);
 const allowedExtensions = new Set([
@@ -107,6 +108,8 @@ async function extractPdfText(buffer) {
 
 export async function extractDocumentText(buffer, mimeType, extension) {
   if (mimeType === "application/pdf" || extension === ".pdf") return extractPdfText(buffer);
+  const officeText = await extractOpenXmlText(buffer, mimeType, extension);
+  if (officeText) return redactDocumentText(officeText) || null;
   if (!mimeType.startsWith("text/") && !textExtensions.has(extension)) return null;
   const decoded = buffer.subarray(0, 150_000).toString("utf8");
   const plain = /html|xml/i.test(mimeType) || [".htm", ".html", ".xml"].includes(extension)
@@ -116,7 +119,7 @@ export async function extractDocumentText(buffer, mimeType, extension) {
 }
 
 async function cachedExtractedText(absolutePath, buffer, mimeType, extension) {
-  const cachePath = `${absolutePath}.jarvis-text-v2.txt`;
+  const cachePath = `${absolutePath}.jarvis-text-v3.txt`;
   try {
     const cached = await fs.readFile(cachePath, "utf8");
     return cached || null;
@@ -135,6 +138,7 @@ export async function downloadSchoolDocument(page, {
   courseExternalId,
   academicItemExternalId,
   subject,
+  sourcePath,
   allowedHosts,
 }) {
   if (!isAllowedHost(url, allowedHosts)) return { state: "skipped_host" };
@@ -168,6 +172,7 @@ export async function downloadSchoolDocument(page, {
       sourceExternalId: `${source}:document:${checksum}`,
       academicItemExternalId: academicItemExternalId || undefined,
       subject: redactText(subject) || undefined,
+      sourcePath: redactText(sourcePath)?.slice(0, 1_000) || undefined,
       name: resolvedName.slice(0, 300),
       mimeType,
       storageKey: [...directoryParts, storedName].join("/"),

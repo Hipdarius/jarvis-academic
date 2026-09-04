@@ -40,3 +40,12 @@ test("falls back to bounded evidence when wording does not overlap", () => {
   assert.equal(results.length, 1);
   assert.equal(results[0].score, 0);
 });
+
+test("retains PowerPoint slide and spreadsheet sheet locators", () => {
+  const results = rankDocumentEvidence("kinetic energy budget", [{
+    ...base,
+    text: "[Slide 1]\nCourse title.\n\n[Slide 6]\nKinetic energy equals one half mass times velocity squared.\n\n[Sheet Budget]\nA1: Energy budget",
+  }]);
+  assert.equal(results[0].locator, "slide 6");
+  assert.equal(results.some((entry) => entry.locator === "sheet Budget"), true);
+});

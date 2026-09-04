@@ -7,7 +7,7 @@ import { createStagedUpload } from "@/db/store";
 export const runtime = "edge";
 export const dynamic = "force-dynamic";
 
-function checksum(bytes: Uint8Array) {
+function checksum(bytes: Uint8Array<ArrayBuffer>) {
   return crypto.subtle.digest("SHA-256", bytes).then((digest) => (
     Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("")
   ));
@@ -26,7 +26,7 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "The selected file is larger than 25 MB." }, { status: 413 });
   }
 
-  let bytes: Uint8Array;
+  let bytes: Uint8Array<ArrayBuffer>;
   let validated: ReturnType<typeof validateStagedUpload>;
   try {
     bytes = new Uint8Array(await selected.arrayBuffer());

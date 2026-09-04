@@ -175,6 +175,7 @@ async function downloadAssignmentFiles(page, assignments) {
       courseExternalId: assignment.subject || "general",
       academicItemExternalId: `teams:${assignment.externalId}`,
       subject: assignment.subject,
+      sourcePath: [assignment.subject, "Assignments", assignment.title].filter(Boolean).join(" > "),
       allowedHosts,
     }).catch((error) => ({ state: "failed", error: error instanceof Error ? error.message : String(error) }));
     if (downloaded.document) documents.push(downloaded.document);

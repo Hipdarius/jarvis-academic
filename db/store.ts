@@ -1,8 +1,10 @@
 import { and, asc, desc, eq, isNull, lt, sql } from "drizzle-orm";
 
 import type { CommandIntent } from "@/packages/core/src/command-router";
+import { canonicalSubjectName, terminale1CISubjects } from "@/packages/core/src/academic-catalog";
 import type { DashboardState, ProviderStatus } from "@/packages/core/src/dashboard";
 import { rankDocumentEvidence } from "@/packages/core/src/document-retrieval";
+import { classifyKnowledgeFile } from "@/packages/core/src/knowledge-classifier";
 import type { NormalizedAcademicItem, SourceKind } from "@/packages/core/src/model";
 import { buildAdaptiveStudyBlocks } from "@/packages/core/src/study-planner";
 import {
@@ -69,6 +71,7 @@ export type WorkerSyncPayload = {
     checksum: string;
     sourceUrl?: string;
     extractedText?: string | null;
+    sourcePath?: string;
     size?: number;
   }>;
   warnings?: string[];
@@ -101,6 +104,16 @@ function safeJson(value: string | null) {
   }
 }
 
+function safeStringArray(value: string | null) {
+  if (!value) return [];
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === "string").slice(0, 4) : [];
+  } catch {
+    return [];
+  }
+}
+
 function safeSourceUrl(value: string | undefined | null, definition: (typeof sourceDefinitions)[number]) {
   if (!value) return null;
   try {
@@ -130,9 +143,10 @@ function messageContent(value: string) {
 }
 
 function subjectIdFor(name: string) {
-  const normalized = name.trim().toLowerCase();
-  const slug = normalized.replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 60) || "general";
-  return { id: `subject:${slug}`, normalized };
+  const canonical = canonicalSubjectName(name);
+  const normalized = canonical.toLowerCase();
+  const slug = normalized.normalize("NFKD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 60) || "general";
+  return { id: `subject:${slug}`, normalized, name: canonical };
 }
 
 async function ensureSource(definition: (typeof sourceDefinitions)[number]) {
@@ -151,7 +165,7 @@ async function ensureSubject(name: string) {
   const identity = subjectIdFor(name);
   await db.insert(subjects).values({
     id: identity.id,
-    name: name.trim(),
+    name: identity.name,
     normalizedName: identity.normalized,
   }).onConflictDoNothing();
   return identity.id;
@@ -169,7 +183,7 @@ function configuredProviders(): ProviderStatus[] {
 
 export async function readDashboardState(): Promise<DashboardState> {
   const db = getDb();
-  const [itemRows, sourceRows, projectRows, noteRows, jobRows, documentRows, uploadRows, blockRows, runRows, messageRows, proposalRows] = await Promise.all([
+  const [itemRows, sourceRows, projectRows, noteRows, jobRows, documentRows, uploadRows, blockRows, runRows, messageRows, proposalRows, subjectRows] = await Promise.all([
     db.select({
       item: academicItems,
       subjectName: subjects.name,
@@ -192,7 +206,7 @@ export async function readDashboardState(): Promise<DashboardState> {
       .leftJoin(sources, eq(documents.sourceId, sources.id))
       .leftJoin(subjects, eq(documents.subjectId, subjects.id))
       .orderBy(desc(documents.updatedAt))
-      .limit(100),
+      .limit(500),
     db.select({
       upload: stagedUploads,
       item: academicItems,
@@ -215,9 +229,32 @@ export async function readDashboardState(): Promise<DashboardState> {
     db.select().from(agentRuns).orderBy(desc(agentRuns.createdAt)).limit(12),
     db.select().from(agentMessages).orderBy(desc(agentMessages.createdAt)).limit(100),
     db.select().from(improvementProposals).orderBy(desc(improvementProposals.createdAt)).limit(20),
+    db.select().from(subjects),
   ]);
 
   const storedSources = new Map(sourceRows.map((source) => [source.id, source]));
+  const storedSubjects = new Map(subjectRows.map((subject) => [subject.id, subject]));
+  const curriculumNames = new Set(terminale1CISubjects.map((subject) => subject.name));
+  const dashboardSubjects = [
+    ...terminale1CISubjects.map((subject) => ({
+      id: subject.id,
+      name: subject.name,
+      officialName: subject.officialName,
+      group: subject.group,
+      weeklyLessons: subject.weeklyLessons,
+      curriculum: true,
+    })),
+    ...subjectRows.map((subject) => canonicalSubjectName(subject.name)).filter((name, index, all) => (
+      name !== "General" && !curriculumNames.has(name) && all.indexOf(name) === index
+    )).map((name) => ({
+      id: `observed:${name.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`,
+      name,
+      officialName: null,
+      group: "Observed" as const,
+      weeklyLessons: null,
+      curriculum: false,
+    })),
+  ];
   const dashboardSources = sourceDefinitions.filter((definition) => definition.kind !== "manual").map((definition) => {
     const stored = storedSources.get(definition.id);
     const status = stored?.status ?? "unconfigured";
@@ -242,6 +279,7 @@ export async function readDashboardState(): Promise<DashboardState> {
   return {
     mode: "live",
     generatedAt: new Date().toISOString(),
+    subjects: dashboardSubjects,
     items: itemRows.map(({ item, subjectName, sourceName, sourceKind }) => {
       const raw = safeJson(item.rawJson);
       return {
@@ -249,7 +287,7 @@ export async function readDashboardState(): Promise<DashboardState> {
         type: item.type,
         title: item.title,
         description: item.description,
-        subject: subjectName ?? "General",
+        subject: canonicalSubjectName(subjectName),
         source: sourceName,
         sourceKind,
         startsAt: iso(item.startsAt),
@@ -266,7 +304,7 @@ export async function readDashboardState(): Promise<DashboardState> {
       id: project.id,
       title: project.title,
       brief: project.brief,
-      subject: project.subject,
+      subject: canonicalSubjectName(project.subject),
       status: project.status,
       createdAt: project.createdAt.toISOString(),
     })),
@@ -274,50 +312,94 @@ export async function readDashboardState(): Promise<DashboardState> {
       id: note.id,
       title: note.title,
       body: note.body,
-      subject: note.subject,
+      subject: canonicalSubjectName(note.subject),
       createdAt: note.createdAt.toISOString(),
     })),
-    documents: documentRows.map(({ document, sourceName, subjectName }) => ({
-      id: document.id,
-      name: document.name,
-      mimeType: document.mimeType,
-      source: sourceName ?? "Local worker",
-      subject: subjectName ?? "General",
-      academicItemId: document.academicItemId,
-      sourceUrl: document.sourceUrl,
-      extracted: Boolean(document.extractedText),
-      createdAt: document.createdAt.toISOString(),
-    })),
-    stagedUploads: uploadRows.map(({ upload, item, subjectName, sourceName, sourceKind }) => ({
-      id: upload.id,
-      name: upload.originalName,
-      mimeType: upload.mimeType,
-      sizeBytes: upload.sizeBytes,
-      checksum: upload.checksum,
-      status: upload.status,
-      matchConfidence: upload.matchConfidence,
-      matchReason: upload.matchReason,
-      extractor: upload.extractor,
-      pageCount: upload.pageCount,
-      processingMessage: upload.processingMessage,
-      attemptCount: upload.attemptCount,
-      processingStartedAt: iso(upload.processingStartedAt),
-      processingFinishedAt: iso(upload.processingFinishedAt),
-      createdAt: upload.createdAt.toISOString(),
-      destination: item && sourceKind ? {
-        academicItemId: item.id,
-        title: item.title,
-        subject: subjectName ?? "General",
-        source: sourceName ?? "School source",
-        sourceKind,
-        dueAt: iso(item.dueAt),
-        sourceUrl: item.sourceUrl,
-      } : null,
-    })),
+    documents: documentRows.map(({ document, sourceName, subjectName }) => {
+      const storedTopics = safeStringArray(document.topicPathJson);
+      const storedSubject = canonicalSubjectName(subjectName);
+      const hasStoredClassification = Boolean(
+        document.academicPeriod
+        && storedTopics.length
+        && document.classificationConfidence !== null
+        && document.classificationReason,
+      );
+      const inferred = hasStoredClassification ? null : classifyKnowledgeFile({
+        name: document.name,
+        text: document.extractedText,
+        sourcePath: document.sourcePath,
+        subjectHint: subjectName,
+        createdAt: document.createdAt,
+      });
+      return {
+        id: document.id,
+        name: document.name,
+        mimeType: document.mimeType,
+        source: sourceName ?? "Local worker",
+        subject: !hasStoredClassification && storedSubject === "General" ? inferred?.subject ?? "General" : storedSubject,
+        academicItemId: document.academicItemId,
+        sourceUrl: document.sourceUrl,
+        extracted: Boolean(document.extractedText),
+        sourcePath: document.sourcePath,
+        academicPeriod: document.academicPeriod ?? inferred?.academicPeriod ?? "Unscheduled",
+        topicPath: storedTopics.length ? storedTopics : inferred?.topicPath ?? ["Unclassified"],
+        classificationConfidence: document.classificationConfidence ?? inferred?.confidence ?? null,
+        classificationReason: document.classificationReason ?? inferred?.reason ?? null,
+        createdAt: document.createdAt.toISOString(),
+      };
+    }),
+    stagedUploads: uploadRows.map(({ upload, item, subjectName, sourceName, sourceKind }) => {
+      const storedSubject = canonicalSubjectName(storedSubjects.get(upload.subjectId ?? "")?.name ?? subjectName);
+      const storedTopics = safeStringArray(upload.topicPathJson);
+      const hasStoredClassification = Boolean(
+        upload.academicPeriod
+        && storedTopics.length
+        && upload.classificationConfidence !== null
+        && upload.classificationReason,
+      );
+      const inferred = hasStoredClassification ? null : classifyKnowledgeFile({
+        name: upload.originalName,
+        text: upload.extractedText,
+        subjectHint: storedSubject,
+        academicItemTitle: item?.title,
+        createdAt: upload.createdAt,
+      });
+      return {
+        id: upload.id,
+        name: upload.originalName,
+        mimeType: upload.mimeType,
+        sizeBytes: upload.sizeBytes,
+        checksum: upload.checksum,
+        status: upload.status,
+        matchConfidence: upload.matchConfidence,
+        matchReason: upload.matchReason,
+        extractor: upload.extractor,
+        pageCount: upload.pageCount,
+        processingMessage: upload.processingMessage,
+        attemptCount: upload.attemptCount,
+        processingStartedAt: iso(upload.processingStartedAt),
+        processingFinishedAt: iso(upload.processingFinishedAt),
+        createdAt: upload.createdAt.toISOString(),
+        subject: !hasStoredClassification && storedSubject === "General" ? inferred?.subject ?? "General" : storedSubject,
+        academicPeriod: upload.academicPeriod ?? inferred?.academicPeriod ?? "Unscheduled",
+        topicPath: storedTopics.length ? storedTopics : inferred?.topicPath ?? ["Unclassified"],
+        classificationConfidence: upload.classificationConfidence ?? inferred?.confidence ?? null,
+        classificationReason: upload.classificationReason ?? inferred?.reason ?? null,
+        destination: item && sourceKind ? {
+          academicItemId: item.id,
+          title: item.title,
+          subject: canonicalSubjectName(subjectName),
+          source: sourceName ?? "School source",
+          sourceKind,
+          dueAt: iso(item.dueAt),
+          sourceUrl: item.sourceUrl,
+        } : null,
+      };
+    }),
     studyBlocks: blockRows.map(({ block, subjectName }) => ({
       id: block.id,
       academicItemId: block.academicItemId,
-      subject: subjectName ?? "General",
+      subject: canonicalSubjectName(subjectName),
       title: block.title,
       scheduledFor: block.scheduledFor,
       durationMinutes: block.durationMinutes,
@@ -421,6 +503,17 @@ export async function createStagedUpload(input: {
   const suggestion = selected
     ? { academicItemId: selected.id, confidence: 100, reason: "Destination chosen by you." }
     : suggestUploadDestination(input.name, candidates);
+  const matchedCandidate = suggestion
+    ? candidates.find((candidate) => candidate.id === suggestion.academicItemId) ?? null
+    : null;
+  const classification = classifyKnowledgeFile({
+    name: input.name,
+    subjectHint: matchedCandidate?.subject ?? null,
+    academicItemTitle: matchedCandidate?.title ?? null,
+  });
+  const classifiedSubjectId = classification.subject === "General"
+    ? null
+    : await ensureSubject(classification.subject);
   const id = `upload:${crypto.randomUUID()}`;
   const now = new Date();
   await db.insert(stagedUploads).values({
@@ -431,8 +524,13 @@ export async function createStagedUpload(input: {
     sizeBytes: input.sizeBytes,
     checksum: input.checksum.toLowerCase(),
     academicItemId: suggestion?.academicItemId ?? null,
+    subjectId: classifiedSubjectId,
     matchConfidence: suggestion?.confidence ?? null,
     matchReason: suggestion?.reason ?? null,
+    academicPeriod: classification.academicPeriod,
+    topicPathJson: JSON.stringify(classification.topicPath),
+    classificationConfidence: classification.confidence,
+    classificationReason: classification.reason,
     status: "staged",
     createdAt: now,
     updatedAt: now,
@@ -446,6 +544,8 @@ export async function createStagedUpload(input: {
     detailsJson: JSON.stringify({
       academicItemId: suggestion?.academicItemId ?? null,
       matchConfidence: suggestion?.confidence ?? null,
+      subject: classification.subject,
+      topicPath: classification.topicPath,
       sizeBytes: input.sizeBytes,
       checksumPrefix: input.checksum.slice(0, 12),
     }),
@@ -538,7 +638,7 @@ export async function finishStagedUpload(id: string, leaseId: string, payload: {
   message?: string | null;
 }) {
   const db = getDb();
-  const existing = (await db.select({ id: stagedUploads.id }).from(stagedUploads).where(and(
+  const existing = (await db.select().from(stagedUploads).where(and(
     eq(stagedUploads.id, id),
     eq(stagedUploads.status, "processing"),
     eq(stagedUploads.processingLeaseId, leaseId),
@@ -547,6 +647,23 @@ export async function finishStagedUpload(id: string, leaseId: string, payload: {
   const finishedAt = new Date();
   const extractedText = payload.status === "indexed" ? payload.extractedText?.trim().slice(0, 100_000) || null : null;
   if (payload.status === "indexed" && !extractedText) throw new Error("Indexed upload results require extracted text.");
+  const linked = existing.academicItemId
+    ? (await db.select({ item: academicItems, subjectName: subjects.name })
+      .from(academicItems)
+      .leftJoin(subjects, eq(academicItems.subjectId, subjects.id))
+      .where(eq(academicItems.id, existing.academicItemId))
+      .limit(1))[0] ?? null
+    : null;
+  const classification = classifyKnowledgeFile({
+    name: existing.originalName,
+    text: extractedText,
+    subjectHint: linked?.subjectName ?? null,
+    academicItemTitle: linked?.item.title ?? null,
+    createdAt: existing.createdAt,
+  });
+  const classifiedSubjectId = classification.subject === "General"
+    ? null
+    : await ensureSubject(classification.subject);
   await db.update(stagedUploads).set({
     status: payload.status,
     extractedText,
@@ -554,6 +671,11 @@ export async function finishStagedUpload(id: string, leaseId: string, payload: {
     pageCount: payload.pageCount === null || payload.pageCount === undefined
       ? null
       : Math.max(1, Math.min(250, Math.round(payload.pageCount))),
+    subjectId: classifiedSubjectId,
+    academicPeriod: classification.academicPeriod,
+    topicPathJson: JSON.stringify(classification.topicPath),
+    classificationConfidence: classification.confidence,
+    classificationReason: classification.reason,
     processingMessage: payload.message?.slice(0, 500) ?? null,
     processingLeaseId: null,
     processingFinishedAt: finishedAt,
@@ -569,7 +691,14 @@ export async function finishStagedUpload(id: string, leaseId: string, payload: {
     entityType: "staged_upload",
     entityId: id,
     actor: "connector",
-    detailsJson: JSON.stringify({ status: payload.status, extractor: payload.extractor ?? null, pageCount: payload.pageCount ?? null }),
+    detailsJson: JSON.stringify({
+      status: payload.status,
+      extractor: payload.extractor ?? null,
+      pageCount: payload.pageCount ?? null,
+      subject: classification.subject,
+      classificationConfidence: classification.confidence,
+      topicPath: classification.topicPath,
+    }),
     createdAt: finishedAt,
   }).catch(() => undefined);
   return { id, status: payload.status };
@@ -1222,13 +1351,27 @@ export async function ingestWorkerSync(payload: WorkerSyncPayload) {
   for (const document of (payload.documents ?? []).slice(0, 200)) {
     const storageKey = typeof document.storageKey === "string" ? safeStorageKey(document.storageKey) : null;
     if (!storageKey || !/^[a-f0-9]{64}$/i.test(document.checksum ?? "") || !document.name) continue;
-    const linkedItem = document.academicItemExternalId
-      ? (await db.select().from(academicItems).where(and(
+    const linked = document.academicItemExternalId
+      ? (await db.select({ item: academicItems, subjectName: subjects.name }).from(academicItems)
+        .leftJoin(subjects, eq(academicItems.subjectId, subjects.id)).where(and(
         eq(academicItems.sourceId, definition.id),
         eq(academicItems.sourceExternalId, document.academicItemExternalId.slice(0, 300)),
       )).limit(1))[0]
       : null;
-    const documentSubjectId = linkedItem?.subjectId ?? (document.subject ? await ensureSubject(document.subject) : null);
+    const linkedItem = linked?.item ?? null;
+    const sourcePath = document.sourcePath?.replace(/[\u0000-\u001f\u007f]/g, " ").trim().slice(0, 1_000) || null;
+    const classification = classifyKnowledgeFile({
+      name: document.name,
+      text: document.extractedText,
+      sourcePath,
+      subjectHint: document.subject ?? linked?.subjectName,
+      academicItemTitle: linkedItem?.title ?? null,
+      createdAt: now,
+    });
+    const classifiedSubjectId = classification.subject === "General"
+      ? null
+      : await ensureSubject(classification.subject);
+    const documentSubjectId = classifiedSubjectId ?? linkedItem?.subjectId ?? null;
     const id = `document:${(await sha256(`${definition.id}\u0000${storageKey}`)).slice(0, 40)}`;
     await db.insert(documents).values({
       id,
@@ -1241,6 +1384,11 @@ export async function ingestWorkerSync(payload: WorkerSyncPayload) {
       checksum: document.checksum.toLowerCase(),
       sourceUrl: safeSourceUrl(document.sourceUrl, definition),
       extractedText: document.extractedText?.slice(0, 100_000) ?? null,
+      sourcePath,
+      academicPeriod: classification.academicPeriod,
+      topicPathJson: JSON.stringify(classification.topicPath),
+      classificationConfidence: classification.confidence,
+      classificationReason: classification.reason,
       createdAt: now,
       updatedAt: now,
     }).onConflictDoUpdate({
@@ -1253,6 +1401,11 @@ export async function ingestWorkerSync(payload: WorkerSyncPayload) {
         checksum: document.checksum.toLowerCase(),
         sourceUrl: safeSourceUrl(document.sourceUrl, definition),
         extractedText: document.extractedText?.slice(0, 100_000) ?? null,
+        sourcePath,
+        academicPeriod: classification.academicPeriod,
+        topicPathJson: JSON.stringify(classification.topicPath),
+        classificationConfidence: classification.confidence,
+        classificationReason: classification.reason,
         updatedAt: now,
       },
     });
@@ -1305,7 +1458,8 @@ export async function ingestWorkerSync(payload: WorkerSyncPayload) {
 
 export async function createSubjectChatJob(message: string, subject: string | null) {
   const db = getDb();
-  const normalizedSubject = subject?.trim().toLowerCase() || null;
+  const requestedSubject = subject ? canonicalSubjectName(subject) : null;
+  const normalizedSubject = requestedSubject?.toLowerCase() || null;
   const [itemRows, documentRows, uploadRows, noteRows, subjectRows] = await Promise.all([
     db.select({
       item: academicItems,
@@ -1339,24 +1493,37 @@ export async function createSubjectChatJob(message: string, subject: string | nu
     db.select().from(knowledgeNotes).orderBy(desc(knowledgeNotes.updatedAt)).limit(80),
     db.select().from(subjects),
   ]);
-  const subjectRow = normalizedSubject
-    ? subjectRows.find((candidate) => candidate.normalizedName === normalizedSubject) ?? null
+  const resolvedSubjectId = requestedSubject && requestedSubject !== "General"
+    ? await ensureSubject(requestedSubject)
     : null;
-  const matches = (value: string | null | undefined) => !normalizedSubject || (value?.trim().toLowerCase() ?? "general") === normalizedSubject;
+  const matches = (value: string | null | undefined) => !normalizedSubject || canonicalSubjectName(value).toLowerCase() === normalizedSubject;
+  const documentSubject = (row: (typeof documentRows)[number]) => {
+    const stored = canonicalSubjectName(row.subjectName);
+    if (stored !== "General" || row.document.classificationReason) return stored;
+    return classifyKnowledgeFile({
+      name: row.document.name,
+      text: row.document.extractedText,
+      sourcePath: row.document.sourcePath,
+      createdAt: row.document.createdAt,
+    }).subject;
+  };
+  const uploadSubject = (row: (typeof uploadRows)[number]) => (
+    subjectRows.find((candidate) => candidate.id === row.upload.subjectId)?.name ?? row.subjectName
+  );
   const rankedDocuments = rankDocumentEvidence(message, [
-    ...documentRows.filter((row) => matches(row.subjectName) && row.document.extractedText).map((row) => ({
+    ...documentRows.filter((row) => matches(documentSubject(row)) && row.document.extractedText).map((row) => ({
       id: row.document.id,
       kind: "document" as const,
       title: row.document.name,
-      subject: row.subjectName ?? "General",
+      subject: documentSubject(row),
       source: row.sourceName ?? "Local worker",
       text: row.document.extractedText ?? "",
     })),
-    ...uploadRows.filter((row) => matches(row.subjectName) && row.upload.extractedText).map((row) => ({
+    ...uploadRows.filter((row) => matches(uploadSubject(row)) && row.upload.extractedText).map((row) => ({
       id: row.upload.id,
       kind: "upload" as const,
       title: row.upload.originalName,
-      subject: row.subjectName ?? "General",
+      subject: canonicalSubjectName(uploadSubject(row)),
       source: row.sourceName ? `Private upload for ${row.sourceName}` : "Private upload",
       text: row.upload.extractedText ?? "",
     })),
@@ -1368,7 +1535,7 @@ export async function createSubjectChatJob(message: string, subject: string | nu
       ref: `A${index + 1}`,
       kind: "academic_item",
       title: row.item.title,
-      subject: row.subjectName ?? "General",
+      subject: canonicalSubjectName(row.subjectName),
       source: row.sourceName,
       type: row.item.type,
       dueAt: iso(row.item.dueAt),
@@ -1389,22 +1556,22 @@ export async function createSubjectChatJob(message: string, subject: string | nu
       ref: `N${index + 1}`,
       kind: "note",
       title: note.title,
-      subject: note.subject,
+      subject: canonicalSubjectName(note.subject),
       excerpt: note.body.slice(0, 1_000),
     })),
   ];
   const queued = await queueAgentRun({
     trigger: "chat",
-    objective: `Answer a ${subject ?? "cross-subject"} question from verified Jarvis context.`,
+    objective: `Answer a ${requestedSubject ?? "cross-subject"} question from verified Jarvis context.`,
     kind: "subject_chat",
     role: "tutor",
     priority: 70,
-    subjectId: subjectRow?.id ?? null,
+    subjectId: resolvedSubjectId,
     budgetJobs: 1,
     budgetTokens: 3000,
     input: {
       prompt: message.slice(0, 4_000),
-      subject: subject?.slice(0, 200) ?? null,
+      subject: requestedSubject?.slice(0, 200) ?? null,
       citations,
       instruction: "Answer from the supplied citation records. Cite factual claims as [A1], [D1], [U1], or [N1]. Document and upload excerpts include page or section locators. Say plainly when the indexed evidence is insufficient, and never imply access beyond this context.",
     },
@@ -1415,7 +1582,7 @@ export async function createSubjectChatJob(message: string, subject: string | nu
     entityType: "agent_run",
     entityId: queued.runId,
     actor: "user",
-    detailsJson: JSON.stringify({ subject: subject ?? null, citationCount: citations.length }),
+    detailsJson: JSON.stringify({ subject: requestedSubject ?? null, citationCount: citations.length }),
     createdAt: new Date(),
   });
   return { ...queued, citationCount: citations.length };

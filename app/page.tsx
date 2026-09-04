@@ -12,6 +12,7 @@ import {
   CalendarCheck2,
   Check,
   CheckCircle2,
+  ChevronDown,
   ClipboardCopy,
   CloudUpload,
   Clock3,
@@ -65,6 +66,20 @@ import type {
 
 type NavItem = { label: string; icon: LucideIcon };
 type CommandResponse = CommandIntent & { stored: boolean; queuedJobId: string | null };
+type KnowledgeLibraryEntry = {
+  id: string;
+  name: string;
+  subject: string;
+  source: string;
+  sourcePath: string | null;
+  academicPeriod: string;
+  topicPath: string[];
+  mimeType: string | null;
+  extracted: boolean;
+  privateUpload: boolean;
+  confidence: number | null;
+  href: string | null;
+};
 
 const commandExamples = [
   "Algebra exercises 4-8 for Friday",
@@ -164,6 +179,14 @@ function formatFileSize(sizeBytes: number) {
   return `${(sizeBytes / (1_024 * 1_024)).toFixed(1)} MB`;
 }
 
+function uploadIndexingHint(file: File) {
+  const extension = /\.[a-z0-9]+$/i.exec(file.name)?.[0].toLowerCase() ?? "";
+  if ([".pdf", ".docx", ".pptx", ".xlsx", ".txt", ".md", ".csv"].includes(extension)) {
+    return "local text indexing";
+  }
+  return "private storage; OCR not yet available";
+}
+
 function uploadStatus(status: DashboardStagedUpload["status"]) {
   if (status === "indexed") return { label: "indexed", tone: "live" };
   if (status === "processing") return { label: "indexing", tone: "attention" };
@@ -243,6 +266,47 @@ function EmptyState({
   );
 }
 
+function KnowledgeFileRow({ file }: { file: KnowledgeLibraryEntry }) {
+  return (
+    <article className="knowledge-file-row">
+      <span>{file.privateUpload ? <LockKeyhole size={16} /> : file.extracted ? <FileCheck2 size={16} /> : <Paperclip size={16} />}</span>
+      <div><strong>{file.name}</strong><small>{file.sourcePath || file.source} / {file.extracted ? "text indexed" : fileTypeLabel(file.mimeType)}{file.confidence ? ` / ${file.confidence}% classified` : ""}</small></div>
+      <span className={`status-chip ${file.extracted ? "live" : "attention"}`}>{file.extracted ? "searchable" : "stored"}</span>
+      {file.href ? <a aria-label={`${file.privateUpload ? "Download" : "Open source for"} ${file.name}`} href={file.href} rel={file.privateUpload ? undefined : "noreferrer"} target={file.privateUpload ? undefined : "_blank"} title={file.privateUpload ? "Download private file" : "Open source"}>{file.privateUpload ? <Download size={16} /> : <ArrowRight size={16} />}</a> : <span aria-hidden="true" />}
+    </article>
+  );
+}
+
+function KnowledgePeriodTree({ files }: { files: KnowledgeLibraryEntry[] }) {
+  const periods = new Map<string, Map<string, KnowledgeLibraryEntry[]>>();
+  for (const file of files) {
+    const period = file.academicPeriod || "Unscheduled";
+    const topics = periods.get(period) ?? new Map<string, KnowledgeLibraryEntry[]>();
+    const topic = file.topicPath.length ? file.topicPath.join(" / ") : "Unclassified";
+    topics.set(topic, [...(topics.get(topic) ?? []), file]);
+    periods.set(period, topics);
+  }
+  return (
+    <div className="knowledge-periods">
+      {[...periods.entries()].sort(([first], [second]) => {
+        if (first === "Unscheduled") return 1;
+        if (second === "Unscheduled") return -1;
+        return second.localeCompare(first);
+      }).map(([period, topics]) => (
+        <section className="knowledge-period" key={period}>
+          <div className="knowledge-period-heading"><h3>{period}</h3><span>{[...topics.values()].reduce((sum, entries) => sum + entries.length, 0)}</span></div>
+          {[...topics.entries()].sort(([first], [second]) => first.localeCompare(second)).map(([topic, entries]) => (
+            <div className="knowledge-topic" key={topic}>
+              <h4>{topic}<span>{entries.length}</span></h4>
+              <div className="knowledge-file-list">{entries.map((file) => <KnowledgeFileRow file={file} key={file.id} />)}</div>
+            </div>
+          ))}
+        </section>
+      ))}
+    </div>
+  );
+}
+
 export default function Home() {
   const [activeSection, setActiveSection] = useState("Today");
   const [state, setState] = useState<DashboardState | null>(null);
@@ -277,6 +341,7 @@ export default function Home() {
   const [uploadDeleteConfirmId, setUploadDeleteConfirmId] = useState<string | null>(null);
   const [uploadDeletePendingId, setUploadDeletePendingId] = useState<string | null>(null);
   const [uploadRetryPendingId, setUploadRetryPendingId] = useState<string | null>(null);
+  const [knowledgeQuery, setKnowledgeQuery] = useState("");
 
   const loadState = useCallback(async (silent = false) => {
     if (!silent) setStateLoading(true);
@@ -349,17 +414,22 @@ export default function Home() {
       : "Waiting for live state";
   const subjectGroups = useMemo(() => {
     const grouped = new Map<string, DashboardItem[]>();
+    for (const subject of state?.subjects ?? []) grouped.set(subject.name, []);
     for (const item of state?.items ?? []) grouped.set(item.subject, [...(grouped.get(item.subject) ?? []), item]);
     for (const document of state?.documents ?? []) if (!grouped.has(document.subject)) grouped.set(document.subject, []);
     for (const block of state?.studyBlocks ?? []) if (!grouped.has(block.subject)) grouped.set(block.subject, []);
     for (const note of state?.notes ?? []) if (!grouped.has(note.subject)) grouped.set(note.subject, []);
     for (const upload of state?.stagedUploads ?? []) {
-      const uploadSubject = upload.destination?.subject ?? "General";
+      const uploadSubject = upload.subject;
       if (upload.status === "indexed" && !grouped.has(uploadSubject)) {
         grouped.set(uploadSubject, []);
       }
     }
-    return [...grouped.entries()].sort(([a], [b]) => a.localeCompare(b));
+    const order = new Map((state?.subjects ?? []).map((subject, index) => [subject.name, index]));
+    return [...grouped.entries()].sort(([a], [b]) => (
+      (order.get(a) ?? Number.MAX_SAFE_INTEGER) - (order.get(b) ?? Number.MAX_SAFE_INTEGER)
+      || a.localeCompare(b)
+    ));
   }, [state]);
 
   const activeStudyBlocks = useMemo(
@@ -793,7 +863,37 @@ export default function Home() {
     if (selectedSubject) {
       const subjectItems = state?.items.filter((item) => item.subject === selectedSubject) ?? [];
       const subjectDocuments = state?.documents.filter((document) => document.subject === selectedSubject) ?? [];
-      const subjectUploads = state?.stagedUploads.filter((upload) => upload.status === "indexed" && (upload.destination?.subject ?? "General") === selectedSubject) ?? [];
+      const subjectUploads = state?.stagedUploads.filter((upload) => upload.status === "indexed" && upload.subject === selectedSubject) ?? [];
+      const subjectLibraryFiles: KnowledgeLibraryEntry[] = [
+        ...subjectDocuments.map((document) => ({
+          id: document.id,
+          name: document.name,
+          subject: document.subject,
+          source: document.source,
+          sourcePath: document.sourcePath,
+          academicPeriod: document.academicPeriod,
+          topicPath: document.topicPath,
+          mimeType: document.mimeType,
+          extracted: document.extracted,
+          privateUpload: false,
+          confidence: document.classificationConfidence,
+          href: document.sourceUrl,
+        })),
+        ...subjectUploads.map((upload) => ({
+          id: upload.id,
+          name: upload.name,
+          subject: upload.subject,
+          source: "Private upload",
+          sourcePath: null,
+          academicPeriod: upload.academicPeriod,
+          topicPath: upload.topicPath,
+          mimeType: upload.mimeType,
+          extracted: true,
+          privateUpload: true,
+          confidence: upload.classificationConfidence,
+          href: `/api/uploads/${encodeURIComponent(upload.id)}/file`,
+        })),
+      ];
       const subjectBlocks = state?.studyBlocks.filter((block) => block.subject === selectedSubject && block.status !== "skipped") ?? [];
       const chatJobs = state?.agentJobs.filter((job) => job.kind === "subject_chat" && job.subject === selectedSubject) ?? [];
       const activeChat = activeChatJobId ? state?.agentJobs.find((job) => job.id === activeChatJobId) : null;
@@ -814,22 +914,7 @@ export default function Home() {
               <section className="data-section">
                 <div className="section-heading compact"><div><p className="eyebrow">Teacher and personal material</p><h2>Indexed files</h2></div><span className="count-chip">{subjectDocuments.length + subjectUploads.length}</span></div>
                 {subjectDocuments.length || subjectUploads.length ? (
-                  <div className="document-list">
-                    {subjectDocuments.map((document) => (
-                      <article className="document-row" key={document.id}>
-                        <span><Paperclip size={17} /></span>
-                        <div><strong>{document.name}</strong><small>{document.source} / {fileTypeLabel(document.mimeType)} / {document.extracted ? "text indexed" : "stored locally"}</small></div>
-                        {document.sourceUrl ? <a aria-label={`Open source for ${document.name}`} href={document.sourceUrl} rel="noreferrer" target="_blank" title="Open source"><ArrowRight size={16} /></a> : null}
-                      </article>
-                    ))}
-                    {subjectUploads.map((upload) => (
-                      <article className="document-row" key={upload.id}>
-                        <span><LockKeyhole size={17} /></span>
-                        <div><strong>{upload.name}</strong><small>Private upload / {upload.pageCount ? `${upload.pageCount} page${upload.pageCount === 1 ? "" : "s"}` : fileTypeLabel(upload.mimeType)} / text indexed</small></div>
-                        <a aria-label={`Download ${upload.name}`} href={`/api/uploads/${encodeURIComponent(upload.id)}/file`} title="Download private upload"><Download size={16} /></a>
-                      </article>
-                    ))}
-                  </div>
+                  <KnowledgePeriodTree files={subjectLibraryFiles} />
                 ) : <p className="section-empty-copy">No teacher files have been indexed for this subject.</p>}
               </section>
 
@@ -872,27 +957,42 @@ export default function Home() {
       );
     }
 
+    const subjectSections = ["Languages and mathematics", "Specialization", "General education", "Observed"].map((group) => ({
+      group,
+      entries: subjectGroups.filter(([subject]) => (
+        (state?.subjects.find((candidate) => candidate.name === subject)?.group ?? "Observed") === group
+      )),
+    })).filter((section) => section.entries.length);
+
     return (
       <section className="collection-page">
-        <div className="page-heading"><div><p className="eyebrow">Courses from real records</p><h1>Subjects</h1><p>{subjectGroups.length} subject{subjectGroups.length === 1 ? "" : "s"} currently indexed.</p></div></div>
+        <div className="page-heading"><div><p className="eyebrow">Official 1CI profile and observed evidence</p><h1>Subjects</h1><p>{state?.subjects.filter((subject) => subject.curriculum).length ?? 0} curriculum subjects stay organized here before and after school sync.</p></div></div>
         {subjectGroups.length ? (
-          <div className="subject-index">
-            {subjectGroups.map(([subject, items]) => {
-              const openCount = items.filter((item) => item.status !== "done" && item.status !== "cancelled").length;
-              const sourceCount = new Set(items.map((item) => item.source)).size;
-              const documentCount = (state?.documents.filter((document) => document.subject === subject).length ?? 0)
-                + (state?.stagedUploads.filter((upload) => upload.status === "indexed" && (upload.destination?.subject ?? "General") === subject).length ?? 0);
-              const studyCount = state?.studyBlocks.filter((block) => block.subject === subject && block.status !== "done" && block.status !== "skipped").length ?? 0;
-              return (
-                <button className="subject-index-row" key={subject} onClick={() => setSelectedSubject(subject)} type="button">
-                  <span className="entity-icon"><GraduationCap size={19} /></span>
-                  <div><h2>{subject}</h2><p>{openCount} open / {sourceCount} source{sourceCount === 1 ? "" : "s"}</p></div>
-                  <span><strong>{documentCount}</strong><small>files</small></span>
-                  <span><strong>{studyCount}</strong><small>study</small></span>
-                  <ArrowRight size={18} />
-                </button>
-              );
-            })}
+          <div className="subject-curriculum">
+            {subjectSections.map((section) => (
+              <section className="subject-curriculum-group" key={section.group}>
+                <div className="subject-group-heading"><h2>{section.group}</h2><span>{section.entries.length}</span></div>
+                <div className="subject-index">
+                  {section.entries.map(([subject, items]) => {
+                    const metadata = state?.subjects.find((candidate) => candidate.name === subject);
+                    const openCount = items.filter((item) => item.status !== "done" && item.status !== "cancelled").length;
+                    const sourceCount = new Set(items.map((item) => item.source)).size;
+                    const documentCount = (state?.documents.filter((document) => document.subject === subject).length ?? 0)
+                      + (state?.stagedUploads.filter((upload) => upload.status === "indexed" && upload.subject === subject).length ?? 0);
+                    const studyCount = state?.studyBlocks.filter((block) => block.subject === subject && block.status !== "done" && block.status !== "skipped").length ?? 0;
+                    return (
+                      <button className="subject-index-row" key={subject} onClick={() => setSelectedSubject(subject)} type="button">
+                        <span className="entity-icon"><GraduationCap size={19} /></span>
+                        <div><h2>{subject}</h2><p>{metadata?.officialName ? `${metadata.officialName} / ` : ""}{metadata?.weeklyLessons ? `${metadata.weeklyLessons} lesson${metadata.weeklyLessons === 1 ? "" : "s"}/week / ` : ""}{openCount} open / {sourceCount} source{sourceCount === 1 ? "" : "s"}</p></div>
+                        <span><strong>{documentCount}</strong><small>files</small></span>
+                        <span><strong>{studyCount}</strong><small>study</small></span>
+                        <ArrowRight size={18} />
+                      </button>
+                    );
+                  })}
+                </div>
+              </section>
+            ))}
           </div>
         ) : <EmptyState icon={GraduationCap} title="No subjects indexed" copy="Subjects will be created from imported school records, never from placeholders." />}
       </section>
@@ -928,6 +1028,59 @@ export default function Home() {
     const indexedUploadCount = stagedUploads.filter((upload) => upload.status === "indexed").length;
     const waitingUploadCount = stagedUploads.filter((upload) => upload.status === "staged" || upload.status === "processing").length;
     const attentionUploadCount = stagedUploads.filter((upload) => upload.status === "stored" || upload.status === "failed").length;
+    const libraryQuery = knowledgeQuery.trim().toLowerCase();
+    const libraryFiles: KnowledgeLibraryEntry[] = [
+      ...indexedDocuments.map((document) => ({
+        id: document.id,
+        name: document.name,
+        subject: document.subject,
+        source: document.source,
+        sourcePath: document.sourcePath,
+        academicPeriod: document.academicPeriod,
+        topicPath: document.topicPath,
+        mimeType: document.mimeType,
+        extracted: document.extracted,
+        privateUpload: false,
+        confidence: document.classificationConfidence,
+        href: document.sourceUrl,
+      })),
+      ...stagedUploads.filter((upload) => upload.status === "indexed" || upload.status === "stored").map((upload) => ({
+        id: upload.id,
+        name: upload.name,
+        subject: upload.subject,
+        source: "Private upload",
+        sourcePath: null,
+        academicPeriod: upload.academicPeriod,
+        topicPath: upload.topicPath,
+        mimeType: upload.mimeType,
+        extracted: upload.status === "indexed",
+        privateUpload: true,
+        confidence: upload.classificationConfidence,
+        href: `/api/uploads/${encodeURIComponent(upload.id)}/file`,
+      })),
+    ].filter((file) => !libraryQuery || [
+      file.name,
+      file.subject,
+      file.source,
+      file.sourcePath,
+      file.academicPeriod,
+      ...file.topicPath,
+    ].filter(Boolean).join(" ").toLowerCase().includes(libraryQuery));
+    const hierarchy = new Map<string, Map<string, Map<string, KnowledgeLibraryEntry[]>>>();
+    for (const file of libraryFiles) {
+      const periods = hierarchy.get(file.subject) ?? new Map<string, Map<string, KnowledgeLibraryEntry[]>>();
+      const period = file.academicPeriod || "Unscheduled";
+      const topics = periods.get(period) ?? new Map<string, KnowledgeLibraryEntry[]>();
+      const topic = file.topicPath.length ? file.topicPath.join(" / ") : "Unclassified";
+      topics.set(topic, [...(topics.get(topic) ?? []), file]);
+      periods.set(period, topics);
+      hierarchy.set(file.subject, periods);
+    }
+    const subjectOrder = new Map((state?.subjects ?? []).map((subject, index) => [subject.name, index]));
+    const libraryGroups = [...hierarchy.entries()].sort(([first], [second]) => (
+      (subjectOrder.get(first) ?? Number.MAX_SAFE_INTEGER) - (subjectOrder.get(second) ?? Number.MAX_SAFE_INTEGER)
+      || first.localeCompare(second)
+    ));
     return (
       <section className="collection-page">
         <div className="page-heading"><div><p className="eyebrow">Captured and source-derived context</p><h1>Knowledge</h1><p>{notes.length} note{notes.length === 1 ? "" : "s"}, {indexedDocuments.length} school file{indexedDocuments.length === 1 ? "" : "s"}, {indexedUploadCount} personal file{indexedUploadCount === 1 ? "" : "s"} indexed.</p></div><button className="primary-action" onClick={() => openCommand("Remember this: ")} type="button"><Plus size={17} />New note</button></div>
@@ -945,7 +1098,7 @@ export default function Home() {
           <form className="upload-form" onSubmit={(event) => void stageUpload(event)}>
             <label className={`upload-picker ${uploadFile ? "selected" : ""}`}>
               <CloudUpload size={20} />
-              <span><strong>{uploadFile?.name ?? "Choose a file"}</strong><small>{uploadFile ? formatFileSize(uploadFile.size) : "PDF, Office, image, text or ZIP / 25 MB max"}</small></span>
+              <span><strong>{uploadFile?.name ?? "Choose a file"}</strong><small>{uploadFile ? `${formatFileSize(uploadFile.size)} / ${uploadIndexingHint(uploadFile)}` : "PDF, DOCX, PPTX, XLSX, text or image / 25 MB max"}</small></span>
               <input
                 accept=".pdf,.doc,.docx,.ppt,.pptx,.xls,.xlsx,.odt,.ods,.odp,.txt,.md,.csv,.png,.jpg,.jpeg,.webp,.zip"
                 key={uploadInputKey}
@@ -967,6 +1120,7 @@ export default function Home() {
               {uploadPending ? "Staging..." : "Stage file"}
             </button>
           </form>
+          <p className="upload-support-copy"><FileText size={15} />Digital PDFs, Word, PowerPoint, spreadsheets, and text become searchable locally. Scans and images remain private until OCR is available.</p>
           {uploadNotice ? <p className="form-success" role="status"><CheckCircle2 size={15} />{uploadNotice} Nothing was sent to a school system.</p> : null}
           {uploadError ? <p className="form-error" role="alert">{uploadError}</p> : null}
           {stagedUploads.length ? (
@@ -980,7 +1134,8 @@ export default function Home() {
                     <div className="staged-file-main">
                       <strong>{upload.name}</strong>
                       <small>{formatFileSize(upload.sizeBytes)} / SHA-256 {upload.checksum.slice(0, 12)} / attempt {upload.attemptCount}</small>
-                      {upload.destination ? <p><span>{upload.destination.subject}</span>{upload.destination.title} / {upload.destination.source}{upload.matchConfidence ? ` / ${upload.matchConfidence}% match` : ""}</p> : <p>No current assignment match</p>}
+                      <p><span>{upload.subject}</span>{upload.academicPeriod} / {upload.topicPath.join(" / ")}{upload.classificationConfidence ? ` / ${upload.classificationConfidence}% sorted` : ""}</p>
+                      {upload.destination ? <span className="upload-destination-detail">For {upload.destination.title} / {upload.destination.source}{upload.matchConfidence ? ` / ${upload.matchConfidence}% match` : ""}</span> : null}
                       <span className="processing-detail">{upload.processingMessage ?? (upload.status === "staged" ? "Waiting for the local worker." : "Processing details unavailable.")} <b>Private in Jarvis; not submitted.</b></span>
                     </div>
                     <span className={`status-chip ${status.tone}`}>{status.label}</span>
@@ -1015,27 +1170,45 @@ export default function Home() {
           ) : <p className="section-empty-copy">No files are waiting for review.</p>}
         </section>
 
-        {notes.length ? (
-          <div className="entity-grid">
-            {notes.map((note) => (
-              <article className="entity-card note-card" key={note.id}>
-                <span className="entity-icon green"><NotebookPen size={19} /></span>
-                <p className="eyebrow">{note.subject}</p>
-                <h2>{note.title}</h2>
-                <p>{note.body}</p>
-              </article>
-            ))}
+        <section className="data-section knowledge-library">
+          <div className="section-heading library-heading">
+            <div><p className="eyebrow">Subject / semester / topic</p><h2>File library</h2></div>
+            <label className="library-search"><Search size={15} /><span className="sr-only">Search files</span><input onChange={(event) => setKnowledgeQuery(event.target.value)} placeholder="Search files" type="search" value={knowledgeQuery} /></label>
           </div>
-        ) : <EmptyState icon={NotebookPen} title="No notes yet" copy="Facts and teacher remarks you capture will appear here." />}
-        <section className="data-section knowledge-documents">
-          <div className="section-heading compact"><div><p className="eyebrow">Protected worker storage</p><h2>School files</h2></div><span className="count-chip">{indexedDocuments.length}</span></div>
-          {indexedDocuments.length ? <div className="document-list">{indexedDocuments.map((document) => (
-            <article className="document-row" key={document.id}>
-              <span>{document.extracted ? <FileCheck2 size={17} /> : <Paperclip size={17} />}</span>
-              <div><strong>{document.name}</strong><small>{document.subject} / {document.source} / {document.extracted ? "text indexed" : fileTypeLabel(document.mimeType)}</small></div>
-              {document.sourceUrl ? <a aria-label={`Open source for ${document.name}`} href={document.sourceUrl} rel="noreferrer" target="_blank" title="Open source"><ArrowRight size={16} /></a> : null}
-            </article>
-          ))}</div> : <p className="section-empty-copy">No teacher files have been downloaded by the worker.</p>}
+          {libraryGroups.length ? (
+            <div className="knowledge-tree">
+              {libraryGroups.map(([subject, periods], subjectIndex) => {
+                const fileCount = [...periods.values()].reduce((count, topics) => count + [...topics.values()].reduce((sum, files) => sum + files.length, 0), 0);
+                return (
+                  <details className="knowledge-subject" open={Boolean(libraryQuery) || subjectIndex === 0} key={`${subject}:${libraryQuery ? "search" : "browse"}`}>
+                    <summary>
+                      <span className="entity-icon"><GraduationCap size={18} /></span>
+                      <div><strong>{subject}</strong><small>{periods.size} period{periods.size === 1 ? "" : "s"}</small></div>
+                      <span>{fileCount} file{fileCount === 1 ? "" : "s"}</span>
+                      <ChevronDown size={17} />
+                    </summary>
+                    <KnowledgePeriodTree files={[...periods.values()].flatMap((topics) => [...topics.values()].flat())} />
+                  </details>
+                );
+              })}
+            </div>
+          ) : <p className="section-empty-copy">{libraryQuery ? "No files match this search." : "School and personal files will be sorted here after they are stored."}</p>}
+        </section>
+
+        <section className="knowledge-notes-section">
+          <div className="section-heading compact"><div><p className="eyebrow">Manually captured context</p><h2>Notes</h2></div><span className="count-chip">{notes.length}</span></div>
+          {notes.length ? (
+            <div className="entity-grid">
+              {notes.map((note) => (
+                <article className="entity-card note-card" key={note.id}>
+                  <span className="entity-icon green"><NotebookPen size={19} /></span>
+                  <p className="eyebrow">{note.subject}</p>
+                  <h2>{note.title}</h2>
+                  <p>{note.body}</p>
+                </article>
+              ))}
+            </div>
+          ) : <p className="section-empty-copy">Facts and teacher remarks you capture will appear here.</p>}
         </section>
       </section>
     );

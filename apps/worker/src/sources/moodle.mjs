@@ -61,12 +61,15 @@ async function collectCourses(page) {
 async function collectCourseModules(page, course) {
   const modules = await page.locator(".activity-item, li.activity, .activityinstance").evaluateAll((elements) => elements.map((element) => {
     const assignment = element.querySelector('a[href*="/mod/assign/view.php"]');
+    const section = element.closest(".course-section, li.section, [data-sectionid]");
+    const sectionHeading = section?.querySelector(".sectionname, h2, h3, h4, [data-region='section-title']");
     const resources = Array.from(element.querySelectorAll([
       'a[href*="/mod/resource/view.php"]',
       'a[href*="/pluginfile.php/"]',
     ].join(",")));
     return {
       text: element.textContent || "",
+      sectionName: sectionHeading?.textContent || "",
       assignmentHref: assignment instanceof HTMLAnchorElement ? assignment.href : "",
       assignmentTitle: assignment?.textContent || assignment?.getAttribute("title") || "",
       resources: resources.map((anchor) => ({
@@ -89,11 +92,16 @@ async function collectCourseModules(page, course) {
         title: redactText(courseModule.assignmentTitle),
         subject: course.title,
         courseExternalId: `course:${course.id}`,
+        sourcePath: [course.title, redactText(courseModule.sectionName), redactText(courseModule.assignmentTitle)].filter(Boolean).join(" > "),
         externalId: `assign:${course.id}:${moduleId}`,
       });
     }
     for (const resource of courseModule.resources) {
-      if (resource.href) resources.push({ href: resource.href, name: redactText(resource.name) });
+      if (resource.href) resources.push({
+        href: resource.href,
+        name: redactText(resource.name),
+        sourcePath: [course.title, redactText(courseModule.sectionName)].filter(Boolean).join(" > "),
+      });
     }
   }
   return {
@@ -150,6 +158,7 @@ async function downloadDocuments(page, source, course, resources, assignments, r
     ...assignments.flatMap((assignment) => assignment.teacherFiles.map((file) => ({
       ...file,
       academicItemExternalId: `${source.key}:${assignment.externalId}`,
+      sourcePath: assignment.sourcePath,
     }))),
   ].slice(0, remaining);
   const documents = [];
@@ -162,6 +171,7 @@ async function downloadDocuments(page, source, course, resources, assignments, r
       courseExternalId: `course:${course.id}`,
       academicItemExternalId: candidate.academicItemExternalId,
       subject: course.title,
+      sourcePath: candidate.sourcePath || course.title,
       allowedHosts,
     }).catch((error) => ({ state: "failed", error: error instanceof Error ? error.message : String(error) }));
     if (downloaded.document) documents.push(downloaded.document);

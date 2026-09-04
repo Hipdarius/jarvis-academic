@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import path from "node:path";
 
 import { extractDocumentText } from "./documents.mjs";
+import { openXmlExtractor } from "./openxml.mjs";
 import { dashboardUrl, readWorkerToken, workerApiHeaders } from "./publish.mjs";
 
 const maxUploadBytes = 25 * 1_024 * 1_024;
@@ -13,7 +14,19 @@ function pageCountFromText(value) {
 
 function extractorFor(mimeType, extension) {
   if (mimeType === "application/pdf" || extension === ".pdf") return "pdfjs-text-v2";
+  const officeExtractor = openXmlExtractor(extension);
+  if (officeExtractor) return officeExtractor;
   return "plain-text-v1";
+}
+
+function structureSummary(value) {
+  const pages = [...String(value).matchAll(/^\[Page (\d+)\]/gim)].map((match) => Number.parseInt(match[1], 10));
+  if (pages.length) return { count: Math.max(...pages), unit: "page" };
+  const slides = [...String(value).matchAll(/^\[Slide (\d+)\]\s*$/gim)].map((match) => Number.parseInt(match[1], 10));
+  if (slides.length) return { count: Math.max(...slides), unit: "slide" };
+  const sheets = [...String(value).matchAll(/^\[Sheet [^\]]+\]\s*$/gim)];
+  if (sheets.length) return { count: sheets.length, unit: "sheet" };
+  return null;
 }
 
 export async function processUploadBytes(upload, body) {
@@ -29,6 +42,7 @@ export async function processUploadBytes(upload, body) {
   }
   const extension = path.extname(String(upload.name ?? "")).toLowerCase();
   const mimeType = String(upload.mimeType ?? "application/octet-stream").toLowerCase();
+  const extractor = extractorFor(mimeType, extension);
   const extractedText = await extractDocumentText(body, mimeType, extension);
   if (!extractedText) {
     return {
@@ -36,17 +50,20 @@ export async function processUploadBytes(upload, body) {
       extractedText: null,
       extractor: null,
       pageCount: null,
-      message: "Stored safely. This format still needs OCR or an Office text extractor before chat can read it.",
+      message: openXmlExtractor(extension) || extension === ".pdf"
+        ? "Stored safely. No machine-readable text was found; this file may need OCR."
+        : "Stored safely. This format still needs OCR or a compatible text extractor before chat can read it.",
     };
   }
   const pageCount = pageCountFromText(extractedText);
+  const structure = structureSummary(extractedText);
   return {
     status: "indexed",
     extractedText,
-    extractor: extractorFor(mimeType, extension),
+    extractor,
     pageCount,
-    message: pageCount
-      ? `Text indexed locally from ${pageCount} page${pageCount === 1 ? "" : "s"}.`
+    message: structure
+      ? `Text indexed locally from ${structure.count} ${structure.unit}${structure.count === 1 ? "" : "s"}.`
       : "Text indexed locally and available to subject chat.",
   };
 }

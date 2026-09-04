@@ -20,6 +20,7 @@ function payload() {
     documents: [{
       sourceExternalId: `teams:document:${"a".repeat(64)}`,
       name: "brief.pdf",
+      sourcePath: "English / Assignments / Essay draft",
       storageKey: "teams/english/brief.pdf",
       checksum: "a".repeat(64),
       size: 2_048,
@@ -44,4 +45,8 @@ test("rejects mismatched sources and malformed academic records", () => {
   const oversized = payload();
   oversized.documents[0].extractedText = "x".repeat(100_001);
   assert.equal(isWorkerSyncPayload(oversized), false);
+
+  const oversizedPath = payload();
+  oversizedPath.documents[0].sourcePath = "x".repeat(1_001);
+  assert.equal(isWorkerSyncPayload(oversizedPath), false);
 });
