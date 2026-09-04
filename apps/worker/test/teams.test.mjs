@@ -2,7 +2,12 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { normalizeTeamsRows } from "../src/normalization.mjs";
-import { assignmentExternalId, teamsAssignmentHealth } from "../src/sources/teams.mjs";
+import {
+  assignmentEntryNamePattern,
+  assignmentExternalId,
+  isAssignmentsSurfaceError,
+  teamsAssignmentHealth,
+} from "../src/sources/teams.mjs";
 
 test("keeps stable explicit Teams assignment identifiers and subject context", () => {
   const items = normalizeTeamsRows([{
@@ -27,6 +32,16 @@ test("marks Teams for attention only when both navigation and assignment evidenc
   });
   assert.equal(teamsAssignmentHealth(health, true, 0), health);
   assert.equal(teamsAssignmentHealth(health, false, 2), health);
+  assert.deepEqual(teamsAssignmentHealth(health, true, 0, true), {
+    state: "assignments_surface_error",
+    requiresUserAction: false,
+  });
+});
+
+test("recognizes a Teams Assignments error page without treating it as an empty list", () => {
+  assert.equal(isAssignmentsSurfaceError("Oops", "Assignments"), true);
+  assert.equal(isAssignmentsSurfaceError("Assignments", "There was a problem"), true);
+  assert.equal(isAssignmentsSurfaceError("Assignments", "No assignments yet"), false);
 });
 
 test("uses the explicit Teams assignment query identifier instead of mutable card text", () => {
@@ -34,4 +49,10 @@ test("uses the explicit Teams assignment query identifier instead of mutable car
     assignmentExternalId("https://teams.microsoft.com/v2/?assignmentId=stable_12345", "Draft due tomorrow"),
     "assignment:stable_12345",
   );
+});
+
+test("recognizes the Teams app-bar shortcut suffix on Assignments", () => {
+  assert.equal(assignmentEntryNamePattern.test("Assignments"), true);
+  assert.equal(assignmentEntryNamePattern.test("Assignments (Ctrl+Shift+4)"), true);
+  assert.equal(assignmentEntryNamePattern.test("Assignment due tomorrow"), false);
 });

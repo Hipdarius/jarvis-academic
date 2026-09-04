@@ -12,6 +12,7 @@ function boundedInteger(value, fallback, maximum) {
 const maxAssignments = boundedInteger(process.env.JARVIS_MAX_TEAMS_ASSIGNMENTS, 80, 200);
 const maxAssignmentDetails = boundedInteger(process.env.JARVIS_MAX_TEAMS_ASSIGNMENT_DETAILS, 30, 80);
 const maxFiles = boundedInteger(process.env.JARVIS_MAX_FILES_PER_SOURCE, 40, 100);
+export const assignmentEntryNamePattern = /^assignments?(?:\s*\([^)]*\))?$/i;
 
 function stableReference(value) {
   return createHash("sha256").update(String(value ?? "")).digest("hex").slice(0, 32);
@@ -44,15 +45,36 @@ async function firstVisible(locator) {
 }
 
 async function openAssignmentsSurface(page) {
-  const exact = await firstVisible(page.getByRole("link", { name: /^assignments?$/i }));
-  const button = exact ?? await firstVisible(page.getByRole("button", { name: /^assignments?$/i }));
-  const dataControl = button ?? await firstVisible(page.locator('[data-tid*="assignment-app" i], [data-tid*="assignments-nav" i]'));
-  if (!dataControl) return false;
-  await dataControl.click({ timeout: 10_000 }).catch(async () => {
-    await dataControl.evaluate((element) => element.click());
-  });
-  await page.waitForTimeout(2_000);
-  return true;
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const exact = await firstVisible(page.getByRole("link", { name: assignmentEntryNamePattern }));
+    const button = exact ?? await firstVisible(page.getByRole("button", { name: assignmentEntryNamePattern }));
+    const dataControl = button ?? await firstVisible(page.locator([
+      '[data-tid*="assignment-app" i]',
+      '[data-tid*="assignments-nav" i]',
+      '[aria-label^="Assignments" i]',
+      '[title="Assignments" i]',
+    ].join(",")));
+    if (dataControl) {
+      await dataControl.click({ timeout: 10_000 }).catch(async () => {
+        await dataControl.evaluate((element) => element.click());
+      });
+      await page.waitForTimeout(3_000);
+      return true;
+    }
+    await page.waitForTimeout(500);
+  }
+  return false;
+}
+
+export function isAssignmentsSurfaceError(heading, visibleText) {
+  const combined = `${heading ?? ""} ${visibleText ?? ""}`;
+  return /\boops\b|we.ve run into an issue|there was a problem|something went wrong/i.test(combined);
+}
+
+async function assignmentsSurfaceErrored(page) {
+  const heading = await page.getByRole("heading").first().innerText({ timeout: 2_000 }).catch(() => "");
+  const visibleText = await page.locator("body").innerText({ timeout: 2_000 }).catch(() => "");
+  return isAssignmentsSurfaceError(heading, visibleText);
 }
 
 async function collectAssignmentCards(page) {
@@ -196,7 +218,10 @@ function publishableAssignment(row) {
   };
 }
 
-export function teamsAssignmentHealth(health, openedAssignments, assignmentCount) {
+export function teamsAssignmentHealth(health, openedAssignments, assignmentCount, surfaceError = false) {
+  if (surfaceError) {
+    return { ...health, state: "assignments_surface_error", requiresUserAction: false };
+  }
   return !openedAssignments && assignmentCount === 0
     ? { ...health, state: "assignments_surface_not_found", requiresUserAction: false }
     : health;
@@ -226,7 +251,13 @@ export async function syncTeams(page, source) {
     '[data-tid*="channel" i]',
   ]);
   const openedAssignments = await openAssignmentsSurface(page);
-  const assignments = await collectAssignmentCards(page);
+  let assignmentSurfaceError = openedAssignments && await assignmentsSurfaceErrored(page);
+  if (assignmentSurfaceError) {
+    await page.reload({ waitUntil: "domcontentloaded", timeout: 45_000 }).catch(() => undefined);
+    await page.waitForTimeout(3_000);
+    assignmentSurfaceError = await assignmentsSurfaceErrored(page);
+  }
+  const assignments = assignmentSurfaceError ? [] : await collectAssignmentCards(page);
   const assignmentSurfaceMissing = !openedAssignments && assignments.length === 0;
   const detailedAssignments = [];
   const detailWarnings = [];
@@ -244,15 +275,16 @@ export async function syncTeams(page, source) {
   return {
     source: source.key,
     syncedAt: new Date().toISOString(),
-    health: teamsAssignmentHealth(health, openedAssignments, assignments.length),
+    health: teamsAssignmentHealth(health, openedAssignments, assignments.length, assignmentSurfaceError),
     visibleWorkspaceItems,
     items: normalizeTeamsRows(detailedAssignments.map(publishableAssignment)),
     documents: downloaded.documents,
     warnings: [
       ...downloaded.warnings,
       ...detailWarnings,
+      ...(assignmentSurfaceError ? ["assignments_surface_error"] : []),
       ...(assignmentSurfaceMissing ? ["assignments_navigation_not_found"] : []),
     ],
-    extractorState: detailedAssignments.length ? "structured" : "structured_empty",
+    extractorState: assignmentSurfaceError ? "attention" : detailedAssignments.length ? "structured" : "structured_empty",
   };
 }

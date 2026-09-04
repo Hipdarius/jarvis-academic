@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { getDocument } from "pdfjs-dist/legacy/build/pdf.mjs";
+import { getDocument, VerbosityLevel } from "pdfjs-dist/legacy/build/pdf.mjs";
 
 import { workerConfig } from "./config.mjs";
 import { redactText, redactUrl } from "./inspection.mjs";
@@ -86,6 +86,7 @@ async function extractPdfText(buffer) {
     disableFontFace: true,
     isEvalSupported: false,
     useSystemFonts: true,
+    verbosity: VerbosityLevel.ERRORS,
   });
   try {
     const pdf = await loadingTask.promise;

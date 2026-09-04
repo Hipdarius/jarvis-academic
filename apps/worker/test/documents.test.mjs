@@ -37,6 +37,18 @@ test("extracts page-addressable text from a digital PDF", async () => {
   assert.match(extracted, /Assignment chapter 4/);
 });
 
+test("keeps recoverable PDF parser warnings out of worker diagnostics", async () => {
+  const warnings = [];
+  const originalWarn = console.warn;
+  console.warn = (...values) => warnings.push(values.join(" "));
+  try {
+    await extractDocumentText(pdfWithText("Quiet extraction"), "application/pdf", ".pdf");
+  } finally {
+    console.warn = originalWarn;
+  }
+  assert.deepEqual(warnings, []);
+});
+
 test("requests Moodle's direct file redirect and rejects an unresolved resource page", async () => {
   let requestedUrl = "";
   const page = {

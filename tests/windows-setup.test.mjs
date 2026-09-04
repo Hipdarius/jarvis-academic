@@ -102,3 +102,8 @@ test("background launcher logs native warnings without terminating the daemon", 
   assert.match(script, /if \(\$Background\).*?\$ErrorActionPreference = "Continue".*?& \$node @nodeArguments \*>> \$logFile/s);
   assert.match(script, /& \$node @nodeArguments \*>> \$logFile\s+\$exitCode = \$LASTEXITCODE/);
 });
+
+test("doctor reports an enabled password-login opt-in without setup advice", async () => {
+  const script = await fs.readFile(path.join(repositoryRoot, "apps", "worker", "src", "cli.mjs"), "utf8");
+  assert.match(script, /JARVIS_ALLOW_PASSWORD_LOGIN === "true" \? "enabled"/);
+});

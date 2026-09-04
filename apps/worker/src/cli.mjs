@@ -9,6 +9,7 @@ import { createInterface } from "node:readline/promises";
 import { repositoryRoot, requireSource, sourceKeys, sources, workerConfig } from "./config.mjs";
 import { ensureAuthenticated } from "./authentication.mjs";
 import { credentialStatus, loadIamCredentials } from "./credentials.mjs";
+import { acquireDaemonLock } from "./daemon-lock.mjs";
 import { inspectSession, navigateToSource } from "./inspection.mjs";
 import { appendEvent, writeJson } from "./io.mjs";
 import {
@@ -158,7 +159,11 @@ async function doctor({ network = true, json = false } = {}) {
     check("dashboard url", Boolean(dashboard && !String(dashboard).includes("must use HTTPS")), dashboard ?? "Set JARVIS_DASHBOARD_URL."),
     check("worker token", Boolean(token), token ? "configured" : "Set JARVIS_WORKER_TOKEN_FILE or JARVIS_WORKER_TOKEN."),
     check("private Sites API bypass", !String(dashboard).includes(".chatgpt.site") || Boolean(sitesBypass), sitesBypass ? "configured" : "Run .\\scripts\\jarvis.ps1 sites-token."),
-    check("password login opt-in", process.env.JARVIS_ALLOW_PASSWORD_LOGIN === "true", "Run setup or set JARVIS_ALLOW_PASSWORD_LOGIN=true."),
+    check(
+      "password login opt-in",
+      process.env.JARVIS_ALLOW_PASSWORD_LOGIN === "true",
+      process.env.JARVIS_ALLOW_PASSWORD_LOGIN === "true" ? "enabled" : "Run setup or set JARVIS_ALLOW_PASSWORD_LOGIN=true.",
+    ),
     check("iam credentials", credentials.enabled, credentials.error ?? (credentials.storage ? `configured via ${credentials.storage}` : "Run .\\scripts\\jarvis.ps1 credentials.")),
     check("state directory", stateDirectory.ok, stateDirectory.detail),
     check("browser profile", profileDirectory.ok, profileDirectory.detail),
@@ -356,6 +361,7 @@ function pause(milliseconds) {
 }
 
 async function daemon() {
+  const releaseDaemonLock = await acquireDaemonLock(workerConfig.stateDirectory);
   let stopping = false;
   process.once("SIGINT", () => { stopping = true; });
   process.once("SIGTERM", () => { stopping = true; });
@@ -461,6 +467,7 @@ async function daemon() {
     heartbeat.nextSyncAt = null;
     await sendHeartbeat();
     logWorker("worker_stopped");
+    await releaseDaemonLock();
   }
 }
 

@@ -1,7 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { looksLikeLoginUrl, redactText, redactUrl } from "../src/inspection.mjs";
+import {
+  looksLikeLoginUrl,
+  moodleNeedsAuthentication,
+  providerAccountState,
+  redactText,
+  redactUrl,
+} from "../src/inspection.mjs";
 import {
   iamUsernameFor,
   isAllowedCredentialHost,
@@ -31,6 +37,20 @@ test("redacts school email addresses and long tokens", () => {
 
 test("removes query strings and fragments from stored URLs", () => {
   assert.equal(redactUrl("https://example.com/path?code=secret#token"), "https://example.com/path");
+});
+
+test("requires positive Moodle session evidence instead of trusting the public home page", () => {
+  assert.equal(moodleNeedsAuthentication("edumoodle", { loggedOut: 1 }), true);
+  assert.equal(moodleNeedsAuthentication("academy", {}), true);
+  assert.equal(moodleNeedsAuthentication("academy", { loggedIn: 1 }), false);
+  assert.equal(moodleNeedsAuthentication("academy", { logoutLinks: 1 }), false);
+  assert.equal(moodleNeedsAuthentication("teams", {}), false);
+});
+
+test("classifies a WebUntis IAM account mapping rejection", () => {
+  assert.equal(providerAccountState("webuntis", "Invalid user name (student)"), "provider_account_rejected");
+  assert.equal(providerAccountState("webuntis", "Login required"), null);
+  assert.equal(providerAccountState("edumoodle", "Invalid user name"), null);
 });
 
 test("credential entry is restricted to exact identity hosts", () => {

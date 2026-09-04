@@ -36,6 +36,22 @@ export function redactUrl(value) {
   }
 }
 
+export function moodleNeedsAuthentication(sourceKey, {
+  loggedIn = 0,
+  loggedOut = 0,
+  logoutLinks = 0,
+} = {}) {
+  if (!["academy", "edumoodle"].includes(sourceKey)) return false;
+  return loggedOut > 0 || (loggedIn === 0 && logoutLinks === 0);
+}
+
+export function providerAccountState(sourceKey, visibleText) {
+  if (sourceKey === "webuntis" && /invalid\s+user\s*name|ungültig(?:er|e|es)?\s+benutzername/i.test(visibleText)) {
+    return "provider_account_rejected";
+  }
+  return null;
+}
+
 export async function inspectSession(page, source) {
   const passwordVisible = await page.locator('input[type="password"]:visible').count().catch(() => 0);
   const usernameVisible = await page.locator('input[name*="user" i]:visible, input[type="email"]:visible').count().catch(() => 0);
@@ -44,16 +60,28 @@ export async function inspectSession(page, source) {
   }).count().catch(() => 0);
   const identityTileVisible = await page.locator(identityEntryAttributeSelector).count().catch(() => 0)
     + await page.getByText(/^\s*IAM\s*$/i).count().catch(() => 0);
-  const moodleLoggedOut = ["academy", "edumoodle"].includes(source.key)
-    && await page.locator("body.notloggedin").count().catch(() => 0) > 0;
-  const authRequired = moodleLoggedOut || looksLikeLoginUrl(page.url()) || passwordVisible > 0
+  const moodleLoggedIn = await page.locator("body.loggedin").count().catch(() => 0);
+  const moodleLoggedOut = await page.locator("body.notloggedin").count().catch(() => 0);
+  const moodleLogoutLinks = await page.locator('a[href*="/login/logout.php" i]').count().catch(() => 0);
+  const moodleAuthRequired = moodleNeedsAuthentication(source.key, {
+    loggedIn: moodleLoggedIn,
+    loggedOut: moodleLoggedOut,
+    logoutLinks: moodleLogoutLinks,
+  });
+  const authRequired = moodleAuthRequired || looksLikeLoginUrl(page.url()) || passwordVisible > 0
     || usernameVisible > 0 || loginEntryVisible > 0 || identityTileVisible > 0;
 
   let state = authRequired ? "auth_required" : "ready";
   let requiresUserAction = authRequired;
+  const visibleText = await page.locator("body").innerText({ timeout: 2_000 }).catch(() => "");
+  const providerState = providerAccountState(source.key, visibleText);
+  if (providerState) {
+    state = providerState;
+    requiresUserAction = true;
+  }
   if (source.key === "teams" && !authRequired) {
-    const visibleText = redactText(await page.locator("body").innerText({ timeout: 2_000 }).catch(() => ""));
-    if (/we.ve run into an issue|there was a problem|something went wrong|browser.*not supported/i.test(visibleText)) {
+    const redactedVisibleText = redactText(visibleText);
+    if (/we.ve run into an issue|there was a problem|something went wrong|browser.*not supported/i.test(redactedVisibleText)) {
       state = "account_attention";
       requiresUserAction = true;
     }

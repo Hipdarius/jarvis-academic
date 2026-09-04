@@ -149,6 +149,8 @@ function relativeSourceDetail(source: DashboardSource) {
     account_attention: "Teams is showing an account or browser warning",
     workspace_not_ready: "Teams opened, but its workspace did not finish loading",
     assignments_surface_not_found: "Teams opened, but Jarvis could not find Assignments",
+    assignments_surface_error: "Teams opened Assignments, but Microsoft returned an error",
+    provider_account_rejected: "The school portal rejected this IAM account",
   };
   if (attentionCopy[source.detail]) return attentionCopy[source.detail];
   if (!source.lastSuccessAt) return source.detail;

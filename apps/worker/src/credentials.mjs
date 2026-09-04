@@ -6,6 +6,16 @@ import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
 
+export function windowsPowerShellEnvironment(environment = process.env) {
+  const systemRoot = environment.SystemRoot || environment.SYSTEMROOT;
+  if (!systemRoot) return { ...environment };
+  const windowsModules = path.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "Modules");
+  return {
+    ...environment,
+    PSModulePath: [windowsModules, environment.PSModulePath].filter(Boolean).join(path.delimiter),
+  };
+}
+
 function defaultDpapiFile() {
   if (!process.env.LOCALAPPDATA) return null;
   return path.join(process.env.LOCALAPPDATA, "AcademicJarvis", "iam-credential.dpapi.json");
@@ -24,7 +34,7 @@ async function loadWindowsDpapiCredentials(file) {
     "@{ username = $stored.username; password = $plain } | ConvertTo-Json -Compress",
   ].join("; ");
   const { stdout } = await execFileAsync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], {
-    env: { ...process.env, JARVIS_DPAPI_FILE: file },
+    env: { ...windowsPowerShellEnvironment(), JARVIS_DPAPI_FILE: file },
     windowsHide: true,
     maxBuffer: 32_768,
   });
