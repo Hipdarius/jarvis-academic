@@ -103,11 +103,20 @@ try {
       }
       Move-Item -LiteralPath $logFile -Destination "$logFile.1" -Force
     }
-    & $node @nodeArguments *>> $logFile
+    # Windows PowerShell 5 wraps native stderr as NativeCommandError. Keep
+    # parser warnings in the log without letting them terminate the daemon.
+    $previousErrorActionPreference = $ErrorActionPreference
+    try {
+      $ErrorActionPreference = "Continue"
+      & $node @nodeArguments *>> $logFile
+      $exitCode = $LASTEXITCODE
+    } finally {
+      $ErrorActionPreference = $previousErrorActionPreference
+    }
   } else {
     & $node @nodeArguments
+    $exitCode = $LASTEXITCODE
   }
-  $exitCode = $LASTEXITCODE
 } finally {
   Pop-Location
 }

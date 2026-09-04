@@ -96,3 +96,9 @@ test("scheduled worker starts immediately and has retry and watchdog recovery", 
   assert.match(script, /GetTask\(\$taskName\).*Run\(\$null\)/s);
   assert.match(script, /MultipleInstances\s*=\s*2/);
 });
+
+test("background launcher logs native warnings without terminating the daemon", async () => {
+  const script = await fs.readFile(path.join(repositoryRoot, "scripts", "jarvis.ps1"), "utf8");
+  assert.match(script, /if \(\$Background\).*?\$ErrorActionPreference = "Continue".*?& \$node @nodeArguments \*>> \$logFile/s);
+  assert.match(script, /& \$node @nodeArguments \*>> \$logFile\s+\$exitCode = \$LASTEXITCODE/);
+});
