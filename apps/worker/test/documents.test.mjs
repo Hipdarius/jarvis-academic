@@ -1,8 +1,21 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { downloadSchoolDocument, extractDocumentText, safePathSegment } from "../src/documents.mjs";
-import { academicYearStart, currentAcademicYearStart, isArchivedCourse, prioritizeCourses } from "../src/sources/moodle.mjs";
+import {
+  downloadSchoolDocument,
+  extractDocumentText,
+  safePathSegment,
+  storeSchoolDocumentBuffer,
+  storeSchoolTextDocument,
+} from "../src/documents.mjs";
+import {
+  academicYearStart,
+  currentAcademicYearStart,
+  isArchivedCourse,
+  isMoodleContentActivity,
+  moodleActivityType,
+  prioritizeCourses,
+} from "../src/sources/moodle.mjs";
 
 test("sanitizes school filenames without allowing path traversal", () => {
   assert.equal(safePathSegment("../../Homework: chapter 2.pdf"), "Homework-chapter-2.pdf");
@@ -49,6 +62,19 @@ test("keeps recoverable PDF parser warnings out of worker diagnostics", async ()
   assert.deepEqual(warnings, []);
 });
 
+test("retains the original PDF byte size after extraction", async () => {
+  const pdf = pdfWithText("Stable byte metadata");
+  const expectedSize = pdf.byteLength;
+  const result = await storeSchoolDocumentBuffer({
+    source: "academy",
+    buffer: pdf,
+    name: "byte-size-test.pdf",
+    courseExternalId: "test-course",
+    subject: "Test",
+  });
+  assert.equal(result.document.size, expectedSize);
+});
+
 test("requests Moodle's direct file redirect and rejects an unresolved resource page", async () => {
   let requestedUrl = "";
   const page = {
@@ -80,6 +106,7 @@ test("requests Moodle's direct file redirect and rejects an unresolved resource 
 test("classifies Moodle course years against the current school year", () => {
   const reference = new Date("2026-08-13T10:00:00Z");
   assert.equal(academicYearStart("Database Systems 2025/26"), 2025);
+  assert.equal(academicYearStart("2CI_MAIOU_25_26"), 2025);
   assert.equal(currentAcademicYearStart(reference), 2026);
   assert.equal(isArchivedCourse("Database Systems 2025/26", reference), true);
   assert.equal(isArchivedCourse("Database Systems 2026/27", reference), false);
@@ -88,4 +115,15 @@ test("classifies Moodle course years against the current school year", () => {
     prioritizeCourses([{ title: "History 2025/26" }, { title: "Math 2026/27" }], reference).map((course) => course.title),
     ["Math 2026/27", "History 2025/26"],
   );
+});
+
+test("traverses Moodle folders, pages, and books but not navigation activities", () => {
+  assert.equal(moodleActivityType("https://academy.am.lu/mod/folder/view.php?id=42"), "folder");
+  assert.equal(isMoodleContentActivity("https://academy.am.lu/mod/page/view.php?id=43"), true);
+  assert.equal(isMoodleContentActivity("https://academy.am.lu/mod/book/view.php?id=44"), true);
+  assert.equal(isMoodleContentActivity("https://academy.am.lu/mod/forum/view.php?id=45"), false);
+});
+
+test("does not create knowledge documents from empty Moodle pages", async () => {
+  assert.deepEqual(await storeSchoolTextDocument({ content: "   " }), { state: "skipped_empty" });
 });

@@ -163,7 +163,7 @@ function actionKey(page, stage) {
 
 async function manualResult(page, source, state = "auth_required") {
   const result = await inspectSession(page, source);
-  return { ...result, state, requiresUserAction: true };
+  return { ...result, state: result.state === "provider_account_rejected" ? result.state : state, requiresUserAction: true };
 }
 
 async function verifySource(sourcePage, source) {

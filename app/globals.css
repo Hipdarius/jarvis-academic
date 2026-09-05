@@ -739,6 +739,16 @@ textarea { -webkit-tap-highlight-color: transparent; }
   white-space: nowrap;
 }
 
+.system-row.source-coverage-row { padding-block: 12px; }
+.system-row.source-coverage-row strong { font-size: 14px; }
+.system-row.source-coverage-row div span {
+  overflow: visible;
+  font-size: 13px;
+  line-height: 1.4;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
 .count-chip {
   background: var(--surface-muted);
   color: var(--muted);

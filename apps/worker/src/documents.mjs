@@ -22,6 +22,22 @@ function boundedInteger(value, fallback, minimum, maximum) {
 
 const maxDocumentBytes = boundedInteger(process.env.JARVIS_MAX_DOCUMENT_MB, 25, 1, 100) * 1_024 * 1_024;
 
+const mimeByExtension = new Map([
+  [".csv", "text/csv"],
+  [".docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"],
+  [".html", "text/html"],
+  [".jpeg", "image/jpeg"],
+  [".jpg", "image/jpeg"],
+  [".json", "application/json"],
+  [".md", "text/markdown"],
+  [".pdf", "application/pdf"],
+  [".png", "image/png"],
+  [".pptx", "application/vnd.openxmlformats-officedocument.presentationml.presentation"],
+  [".txt", "text/plain"],
+  [".xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"],
+  [".zip", "application/zip"],
+]);
+
 export function safePathSegment(value, fallback = "item") {
   const normalized = String(value ?? "")
     .normalize("NFKD")
@@ -138,6 +154,69 @@ async function cachedExtractedText(absolutePath, buffer, mimeType, extension) {
   return extracted;
 }
 
+export async function storeSchoolDocumentBuffer({
+  source,
+  buffer,
+  name,
+  mimeType,
+  sourceUrl,
+  courseExternalId,
+  academicItemExternalId,
+  subject,
+  sourcePath,
+}) {
+  if (!Buffer.isBuffer(buffer) || buffer.byteLength > maxDocumentBytes) {
+    return { state: "skipped_size", size: buffer?.byteLength ?? 0 };
+  }
+  // pdf.js may transfer and detach the backing ArrayBuffer during extraction.
+  // Capture immutable metadata before handing the bytes to any parser.
+  const size = buffer.byteLength;
+  const safeName = safePathSegment(name, "school-file");
+  const extension = path.extname(safeName).toLowerCase();
+  if (extension && !allowedExtensions.has(extension)) return { state: "skipped_type", mimeType };
+  const resolvedMimeType = String(mimeType || mimeByExtension.get(extension) || "application/octet-stream")
+    .split(";")[0]
+    .trim()
+    .toLowerCase();
+  const checksum = createHash("sha256").update(buffer).digest("hex");
+  const directoryParts = [safePathSegment(source), safePathSegment(courseExternalId, "general")];
+  const directory = path.join(workerConfig.schoolFilesDirectory, ...directoryParts);
+  await ensurePrivateDirectory(directory);
+  const stem = safePathSegment(path.basename(safeName, extension), "school-file");
+  const storedName = `${stem}-${checksum.slice(0, 10)}${extension}`;
+  const absolutePath = path.join(directory, storedName);
+  await fs.writeFile(absolutePath, buffer, { mode: 0o600 });
+  const text = await cachedExtractedText(absolutePath, buffer, resolvedMimeType, extension);
+
+  return {
+    state: "downloaded",
+    document: {
+      sourceExternalId: `${source}:document:${checksum}`,
+      academicItemExternalId: academicItemExternalId || undefined,
+      subject: redactText(subject) || undefined,
+      sourcePath: redactText(sourcePath)?.slice(0, 1_000) || undefined,
+      name: safeName.slice(0, 300),
+      mimeType: resolvedMimeType,
+      storageKey: [...directoryParts, storedName].join("/"),
+      checksum,
+      sourceUrl: redactUrl(sourceUrl),
+      extractedText: text,
+      size,
+    },
+  };
+}
+
+export function storeSchoolTextDocument(input) {
+  const content = redactDocumentText(input.content);
+  if (!content) return Promise.resolve({ state: "skipped_empty" });
+  return storeSchoolDocumentBuffer({
+    ...input,
+    buffer: Buffer.from(content, "utf8"),
+    name: `${safePathSegment(input.name, "school-page").replace(/\.txt$/i, "")}.txt`,
+    mimeType: "text/plain",
+  });
+}
+
 export async function downloadSchoolDocument(page, {
   source,
   url,
@@ -169,30 +248,15 @@ export async function downloadSchoolDocument(page, {
   const body = await response.body();
   if (body.byteLength > maxDocumentBytes) return { state: "skipped_size", size: body.byteLength };
 
-  const checksum = createHash("sha256").update(body).digest("hex");
-  const directoryParts = [safePathSegment(source), safePathSegment(courseExternalId, "general")];
-  const directory = path.join(workerConfig.schoolFilesDirectory, ...directoryParts);
-  await ensurePrivateDirectory(directory);
-  const stem = safePathSegment(path.basename(resolvedName, extension), "school-file");
-  const storedName = `${stem}-${checksum.slice(0, 10)}${extension}`;
-  const absolutePath = path.join(directory, storedName);
-  await fs.writeFile(absolutePath, body, { mode: 0o600 });
-  const text = await cachedExtractedText(absolutePath, body, mimeType, extension);
-
-  return {
-    state: "downloaded",
-    document: {
-      sourceExternalId: `${source}:document:${checksum}`,
-      academicItemExternalId: academicItemExternalId || undefined,
-      subject: redactText(subject) || undefined,
-      sourcePath: redactText(sourcePath)?.slice(0, 1_000) || undefined,
-      name: resolvedName.slice(0, 300),
-      mimeType,
-      storageKey: [...directoryParts, storedName].join("/"),
-      checksum,
-      sourceUrl: redactUrl(response.url()),
-      extractedText: text,
-      size: body.byteLength,
-    },
-  };
+  return storeSchoolDocumentBuffer({
+    source,
+    buffer: body,
+    name: resolvedName,
+    mimeType,
+    sourceUrl: response.url(),
+    courseExternalId,
+    academicItemExternalId,
+    subject,
+    sourcePath,
+  });
 }

@@ -84,6 +84,7 @@ export type DashboardSource = {
   lastSuccessAt: string | null;
   lastAttemptAt: string | null;
   detail: string;
+  readNote?: string | null;
 };
 
 export type DashboardProject = {

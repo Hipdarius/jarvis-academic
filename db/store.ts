@@ -280,6 +280,20 @@ export async function readDashboardState(): Promise<DashboardState> {
   const dashboardSources = sourceDefinitions.filter((definition) => definition.kind !== "manual").map((definition) => {
     const stored = storedSources.get(definition.id);
     const status = stored?.status ?? "unconfigured";
+    const latestRead = recentSyncRows.find((run) => run.sourceId === definition.id);
+    const diagnostic = safeJson(latestRead?.errorSummary ?? null);
+    const warnings = Array.isArray(diagnostic?.warnings) ? diagnostic.warnings : [];
+    const readNote = diagnostic?.extractor === "awaiting_school_year" || warnings.includes("no_current_school_year_teams")
+      ? "No current-year class groups are available yet."
+      : warnings.includes("shared_folder_access_denied")
+        ? "SharePoint denied access to some folders; accessible files were retained."
+      : warnings.includes("shared_folder_navigation_failed")
+        ? "Some Teams folders could not be opened; accessible files were retained."
+        : warnings.includes("course_navigation_failed")
+          ? "Some courses could not be opened; other courses were read."
+          : latestRead?.warningCount
+            ? "The last read was partial; some content needs another attempt."
+            : null;
     const detail = status === "unconfigured"
       ? "Worker has not reported yet"
       : stored?.lastError
@@ -295,6 +309,7 @@ export async function readDashboardState(): Promise<DashboardState> {
       lastSuccessAt: iso(stored?.lastSuccessAt),
       lastAttemptAt: iso(stored?.lastAttemptAt),
       detail,
+      readNote,
     };
   });
   const dashboardItems = itemRows.map(({ item, subjectName, sourceName, sourceKind }) => {
@@ -1616,7 +1631,8 @@ export async function ingestWorkerSync(payload: WorkerSyncPayload) {
     startedAt,
     finishedAt,
     errorSummary: status === "healthy"
-      ? (warnings.length ? JSON.stringify({ extractor: payload.extractorState, warnings }).slice(0, 4_000) : null)
+      ? (warnings.length || payload.extractorState === "awaiting_school_year"
+          ? JSON.stringify({ extractor: payload.extractorState, warnings }).slice(0, 4_000) : null)
       : JSON.stringify({ state: payload.health.state, extractor: payload.extractorState, warnings }).slice(0, 4_000),
   });
 

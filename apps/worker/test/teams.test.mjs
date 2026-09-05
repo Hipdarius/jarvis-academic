@@ -3,6 +3,12 @@ import test from "node:test";
 
 import { normalizeTeamsRows } from "../src/normalization.mjs";
 import {
+  isUsefulTeamsPost,
+  selectCurrentTeams,
+  teamsAnnouncementItem,
+  teamsPostAuthor,
+} from "../src/sources/teams-content.mjs";
+import {
   assignmentEntryNamePattern,
   assignmentExternalId,
   isAssignmentsSurfaceError,
@@ -55,4 +61,33 @@ test("recognizes the Teams app-bar shortcut suffix on Assignments", () => {
   assert.equal(assignmentEntryNamePattern.test("Assignments"), true);
   assert.equal(assignmentEntryNamePattern.test("Assignments (Ctrl+Shift+4)"), true);
   assert.equal(assignmentEntryNamePattern.test("Assignment due tomorrow"), false);
+});
+
+test("selects only current-year class teams and waits cleanly when they do not exist", () => {
+  const teams = [
+    { title: "25-26 LAM 2CI SCIPR" },
+    { title: "26-27 LAM 1CI Programming" },
+    { title: "Chess club" },
+  ];
+  assert.deepEqual(
+    selectCurrentTeams(teams, new Date("2026-09-04T12:00:00Z")).map((team) => team.title),
+    ["26-27 LAM 1CI Programming"],
+  );
+  assert.deepEqual(selectCurrentTeams(teams.slice(0, 1), new Date("2026-09-04T12:00:00Z")), []);
+});
+
+test("keeps substantive teacher posts separate from meeting noise", () => {
+  assert.equal(isUsefulTeamsPost('Teacher 10/09 08:00 Meeting in "General" ended Reply'), false);
+  assert.equal(isUsefulTeamsPost("Teacher 10/09 08:00 Please prepare chapter 3 and bring the worksheet tomorrow."), true);
+  const item = teamsAnnouncementItem({
+    team: "26-27 LAM 1CI Programming",
+    channel: "General",
+    author: "Teacher Name",
+    text: "Please prepare chapter 3.",
+    externalId: "post-42",
+  });
+  assert.equal(item.type, "announcement");
+  assert.equal(item.subject, "26-27 LAM 1CI Programming");
+  assert.equal(item.dueAt, undefined);
+  assert.equal(teamsPostAuthor("Teacher Name17/11/2025 08:53"), "Teacher Name");
 });

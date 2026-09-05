@@ -1406,9 +1406,14 @@ export default function Home() {
             <div className="section-heading compact"><div><p className="eyebrow">School sources</p><h2>Browser worker</h2></div><span className={`status-summary ${healthySources ? "live" : "idle"}`}>{healthySources}/{Math.max(sources.length, 4)} live</span></div>
             <div className="system-list">
               {sources.map((source) => (
-                <div className="system-row" key={source.id}>
+                <div className="system-row source-coverage-row" key={source.id}>
                   <SourceMark source={source} />
-                  <div><strong>{source.name}</strong><span>{relativeSourceDetail(source)}</span></div>
+                  <div>
+                    <strong>{source.name}</strong>
+                    <span>{relativeSourceDetail(source)}</span>
+                    <span>Knowledge files: {(state?.documents ?? []).filter((document) => document.source === source.name).length} / Records: {(state?.items ?? []).filter((item) => item.sourceKind === source.kind).length}</span>
+                    {source.readNote ? <span>{source.readNote}</span> : null}
+                  </div>
                   <span className={`status-chip ${sourceTone(source.status)}`}>{source.status}</span>
                 </div>
               ))}

@@ -42,9 +42,10 @@ function rowTitle(row, fallback) {
 
 function typeFor(bucket, text) {
   if (/mitteilung|announcement|news/i.test(bucket)) return "announcement";
+  if (/lesson|stunde|timetable|stundenplan/i.test(bucket)) return "lesson";
+  if (/exam|examen|test|prüf|pruef/i.test(bucket)) return "test";
   if (presentationSignal.test(text)) return "presentation";
   if (/exam|examen|test/i.test(bucket) || /\b(exam|examen|test)\b/i.test(text)) return "test";
-  if (/lesson|stunde|timetable|stundenplan/i.test(bucket)) return "lesson";
   if (/homework|hausaufgabe|assignment|devoir/i.test(bucket) || explicitTask.test(text)) return "homework";
   return null;
 }
@@ -66,6 +67,7 @@ function normalizeRow({ source, sourceKind, bucket, row, reference }) {
     description: clean(row.description || (text === title ? "" : text)).slice(0, 2_000) || undefined,
     subject: clean(row.subject) || inferredSubject(text),
     teacher: clean(row.teacher) || undefined,
+    room: clean(row.room) || undefined,
     sourceUrl: row.href || undefined,
     evidence: "source_derived",
     confidence: sourceDate?.precision === "datetime" ? 94 : sourceDate ? 86 : 82,
@@ -75,6 +77,8 @@ function normalizeRow({ source, sourceKind, bucket, row, reference }) {
       duePrecision: sourceDate?.precision,
       submissionStatus: clean(row.submissionStatus) || undefined,
       courseExternalId: clean(row.courseExternalId) || undefined,
+      teacher: clean(row.teacher) || undefined,
+      room: clean(row.room) || undefined,
     },
   };
   if (sourceDate?.iso) {

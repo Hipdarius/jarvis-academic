@@ -24,6 +24,35 @@ test("normalizes a WebUntis homework row without inventing a subject", () => {
   assert.equal(items[0].evidence, "source_derived");
 });
 
+test("retains structured WebUntis class details", () => {
+  const items = normalizeWebUntisSections([{
+    label: "Mein Stundenplan",
+    items: [{
+      externalId: "lesson-42",
+      text: "Mathematics 18.09.2026 09:00",
+      subject: "Mathematics",
+      teacher: "Teacher Name",
+      room: "B204",
+    }],
+  }], reference);
+  assert.equal(items[0].type, "lesson");
+  assert.equal(items[0].subject, "Mathematics");
+  assert.equal(items[0].teacher, "Teacher Name");
+  assert.equal(items[0].room, "B204");
+  assert.equal(items[0].startsAt, "2026-09-18T07:00:00.000Z");
+});
+
+test("uses WebUntis section evidence for German assessments and lessons", () => {
+  const items = normalizeWebUntisSections([
+    { label: "Prüfungen", items: [{ text: "Mathematik 21.09.2026 09:00", subject: "Mathematik" }] },
+    { label: "Mein Stundenplan", items: [{ text: "Programming: unit tests 21.09.2026 11:00", subject: "Programming" }] },
+  ], reference);
+  assert.equal(items[0].type, "test");
+  assert.equal(items[0].dueAt, "2026-09-21T07:00:00.000Z");
+  assert.equal(items[1].type, "lesson");
+  assert.equal(items[1].startsAt, "2026-09-21T09:00:00.000Z");
+});
+
 test("keeps WebUntis inbox messages as announcements even when they mention exams", () => {
   const items = normalizeWebUntisSections([{
     label: "Mitteilungen",

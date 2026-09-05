@@ -89,6 +89,8 @@ test("derives the school email while preserving the IAM username", () => {
   assert.equal(schoolEmailFor("student@school.lu"), "student@school.lu");
   assert.equal(iamUsernameFor("student@school.lu"), "student");
   assert.equal(iamUsernameFor("student"), "student");
+  assert.equal(iamUsernameFor("StuDent123@SCHOOL.LU"), "StuDent123");
+  assert.equal(schoolEmailFor("StuDent123"), "StuDent123@school.lu");
 });
 
 test("recognizes IAM and Microsoft provider choices", () => {

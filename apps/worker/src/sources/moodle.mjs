@@ -1,4 +1,4 @@
-import { downloadSchoolDocument } from "../documents.mjs";
+import { downloadSchoolDocument, storeSchoolTextDocument } from "../documents.mjs";
 import { navigateToSource, redactText, redactUrl } from "../inspection.mjs";
 import { normalizeMoodleRows } from "../normalization.mjs";
 import { parseSourceDate } from "../source-time.mjs";
@@ -11,9 +11,11 @@ function boundedInteger(value, fallback, maximum) {
 const maxCourses = boundedInteger(process.env.JARVIS_MAX_MOODLE_COURSES, 24, 60);
 const maxAssignments = boundedInteger(process.env.JARVIS_MAX_MOODLE_ASSIGNMENTS, 80, 200);
 const maxFiles = boundedInteger(process.env.JARVIS_MAX_FILES_PER_SOURCE, 40, 100);
+const maxContentActivities = boundedInteger(process.env.JARVIS_MAX_MOODLE_CONTENT_ACTIVITIES, 80, 200);
+const contentActivityTypes = new Set(["book", "folder", "page"]);
 
 export function academicYearStart(name) {
-  const match = /(?:20)?(\d{2})\s*[\/-]\s*(?:20)?(\d{2})/.exec(String(name ?? ""));
+  const match = /(?:20)?(\d{2})\s*[\/_-]\s*(?:20)?(\d{2})/.exec(String(name ?? ""));
   if (!match) return null;
   const start = 2000 + Number(match[1]);
   const end = 2000 + Number(match[2]);
@@ -58,7 +60,28 @@ async function collectCourses(page) {
   return [...unique.values()].slice(0, maxCourses);
 }
 
-async function collectCourseModules(page, course) {
+export function moodleActivityType(value) {
+  try {
+    return /\/mod\/([^/]+)\/view\.php$/i.exec(new URL(value).pathname)?.[1]?.toLowerCase() ?? null;
+  } catch {
+    return null;
+  }
+}
+
+export function isMoodleContentActivity(value) {
+  return contentActivityTypes.has(moodleActivityType(value));
+}
+
+async function openCourseIndex(page, source) {
+  const indexUrl = new URL("my/courses.php", source.url).href;
+  const response = await page.goto(indexUrl, { waitUntil: "domcontentloaded", timeout: 45_000 }).catch(() => null);
+  if (!response || response.status() >= 400) {
+    await page.goto(source.url, { waitUntil: "domcontentloaded", timeout: 45_000 });
+  }
+  await page.waitForTimeout(700);
+}
+
+export async function collectCourseModules(page, course) {
   const modules = await page.locator(".activity-item, li.activity, .activityinstance").evaluateAll((elements) => elements.map((element) => {
     const assignment = element.querySelector('a[href*="/mod/assign/view.php"]');
     const section = element.closest(".course-section, li.section, [data-sectionid]");
@@ -67,6 +90,7 @@ async function collectCourseModules(page, course) {
       'a[href*="/mod/resource/view.php"]',
       'a[href*="/pluginfile.php/"]',
     ].join(",")));
+    const activities = Array.from(element.querySelectorAll('a[href*="/mod/"][href*="/view.php"]'));
     return {
       text: element.textContent || "",
       sectionName: sectionHeading?.textContent || "",
@@ -76,11 +100,16 @@ async function collectCourseModules(page, course) {
         href: anchor instanceof HTMLAnchorElement ? anchor.href : "",
         name: anchor.textContent || anchor.getAttribute("title") || "",
       })),
+      activities: activities.map((anchor) => ({
+        href: anchor instanceof HTMLAnchorElement ? anchor.href : "",
+        name: anchor.textContent || anchor.getAttribute("title") || "",
+      })),
     };
   }));
 
   const assignments = [];
   const resources = [];
+  const activities = [];
   for (const courseModule of modules) {
     const text = redactText(courseModule.text);
     if (courseModule.assignmentHref) {
@@ -103,10 +132,103 @@ async function collectCourseModules(page, course) {
         sourcePath: [course.title, redactText(courseModule.sectionName)].filter(Boolean).join(" > "),
       });
     }
+    for (const activity of courseModule.activities) {
+      if (!activity.href || !isMoodleContentActivity(activity.href)) continue;
+      const type = moodleActivityType(activity.href);
+      const moduleId = queryId(activity.href);
+      if (!type || !moduleId) continue;
+      activities.push({
+        type,
+        moduleId,
+        href: activity.href,
+        title: redactText(activity.name) || `${type} ${moduleId}`,
+        sectionName: redactText(courseModule.sectionName),
+        sourcePath: [course.title, redactText(courseModule.sectionName), redactText(activity.name)].filter(Boolean).join(" > "),
+      });
+    }
   }
   return {
     assignments: [...new Map(assignments.map((assignment) => [assignment.externalId, assignment])).values()],
     resources: [...new Map(resources.map((resource) => [resource.href, resource])).values()],
+    activities: [...new Map(activities.map((activity) => [`${activity.type}:${activity.moduleId}`, activity])).values()],
+  };
+}
+
+export async function collectActivityPage(page, activity) {
+  await page.goto(activity.href, { waitUntil: "domcontentloaded", timeout: 45_000 });
+  await page.waitForTimeout(500);
+  return page.evaluate((type) => {
+    const main = document.querySelector("#region-main, main, [role='main']");
+    const content = type === "book"
+      ? main?.querySelector(".book_content")
+      : main?.querySelector(".generalbox, [data-region='activity-content']");
+    const links = Array.from((main ?? document.createElement("div")).querySelectorAll('a[href*="/pluginfile.php/"], a[href*="/mod/resource/view.php"]'));
+    const chapters = Array.from(document.querySelectorAll('.book_toc a[href*="/mod/book/view.php"][href*="chapterid="], .block_book_toc a[href*="chapterid="]'));
+    return {
+      title: content?.querySelector("h1, h2, h3")?.textContent || "",
+      text: content?.textContent || "",
+      links: links.map((anchor) => ({
+        href: anchor instanceof HTMLAnchorElement ? anchor.href : "",
+        name: anchor.textContent || anchor.getAttribute("download") || anchor.getAttribute("title") || "",
+      })),
+      chapters: chapters.map((anchor) => ({
+        href: anchor instanceof HTMLAnchorElement ? anchor.href : "",
+        name: anchor.textContent || anchor.getAttribute("title") || "",
+      })),
+    };
+  }, activity.type);
+}
+
+async function discoverActivityContent(page, source, course, activity, remaining) {
+  const pages = [];
+  const resources = [];
+  const warnings = [];
+  const queue = [activity];
+  const visited = new Set();
+
+  while (queue.length && visited.size < maxContentActivities && pages.length + resources.length < remaining) {
+    const current = queue.shift();
+    if (!current?.href || visited.has(current.href)) continue;
+    visited.add(current.href);
+    try {
+      const content = await collectActivityPage(page, current);
+      const title = redactText(content.title) || current.title;
+      const sourcePath = [activity.sourcePath, current.chapterTitle].filter(Boolean).join(" > ");
+      for (const link of content.links) {
+        if (!link.href) continue;
+        resources.push({ href: link.href, name: redactText(link.name), sourcePath });
+      }
+      if (["book", "page"].includes(activity.type)) {
+        const stored = await storeSchoolTextDocument({
+          source: source.key,
+          content: content.text,
+          name: [title, current.chapterTitle].filter(Boolean).join(" - "),
+          sourceUrl: current.href,
+          courseExternalId: `course:${course.id}`,
+          academicItemExternalId: null,
+          subject: course.title,
+          sourcePath,
+        });
+        if (stored.document) pages.push(stored.document);
+        else if (stored.state === "skipped_empty") warnings.push(`activity_${activity.type}_content_not_found`);
+      }
+      if (activity.type === "book") {
+        for (const chapter of content.chapters) {
+          if (chapter.href && new URL(chapter.href).origin === new URL(activity.href).origin
+            && queryId(chapter.href) === activity.moduleId && !visited.has(chapter.href)) {
+            queue.push({ ...activity, href: chapter.href, chapterTitle: redactText(chapter.name) });
+          }
+        }
+      }
+    } catch {
+      warnings.push(`activity_${activity.type}_failed`);
+    }
+  }
+
+  return {
+    documents: pages.slice(0, remaining),
+    resources: [...new Map(resources.map((resource) => [resource.href, resource])).values()].slice(0, Math.max(0, remaining - pages.length)),
+    warnings,
   };
 }
 
@@ -185,6 +307,7 @@ export async function syncMoodle(page, source) {
   if (health.requiresUserAction) return { source: source.key, health, courses: [], items: [], documents: [] };
 
   const reference = new Date();
+  await openCourseIndex(page, source);
   const courses = await collectCourses(page);
   const rows = [];
   const documents = [];
@@ -193,13 +316,18 @@ export async function syncMoodle(page, source) {
   const orderedCourses = prioritizeCourses(courses, reference);
 
   for (const course of orderedCourses) {
-    if (assignmentBudget <= 0) break;
-    await page.goto(course.href, { waitUntil: "domcontentloaded", timeout: 45_000 });
-    await page.waitForTimeout(500);
-    const modules = await collectCourseModules(page, course);
+    let modules;
+    try {
+      await page.goto(course.href, { waitUntil: "domcontentloaded", timeout: 45_000 });
+      await page.waitForTimeout(500);
+      modules = await collectCourseModules(page, course);
+    } catch {
+      warnings.push("course_navigation_failed");
+      continue;
+    }
     const archived = isArchivedCourse(course.title, reference);
     const activeCandidates = modules.assignments.filter((row) => keepAsActive(row, archived, reference));
-    const detailCandidates = archived
+    const detailCandidates = assignmentBudget <= 0 ? [] : archived
       ? modules.assignments.slice(-Math.min(4, assignmentBudget))
       : modules.assignments.slice(0, assignmentBudget);
     const detailed = [];
@@ -217,7 +345,21 @@ export async function syncMoodle(page, source) {
     rows.push(...activeCandidates.map((row) => detailById.get(row.externalId) ?? { ...row, href: redactUrl(row.href) }));
 
     if (documents.length < maxFiles) {
-      const downloaded = await downloadDocuments(page, source, course, modules.resources, detailed, maxFiles - documents.length);
+      const discoveredResources = [...modules.resources];
+      for (const activity of modules.activities.slice(0, maxContentActivities)) {
+        if (documents.length >= maxFiles) break;
+        const discovered = await discoverActivityContent(
+          page,
+          source,
+          course,
+          activity,
+          maxFiles - documents.length,
+        );
+        documents.push(...discovered.documents);
+        discoveredResources.push(...discovered.resources);
+        warnings.push(...discovered.warnings);
+      }
+      const downloaded = await downloadDocuments(page, source, course, discoveredResources, detailed, maxFiles - documents.length);
       documents.push(...downloaded.documents);
       warnings.push(...downloaded.warnings);
     }
@@ -239,6 +381,6 @@ export async function syncMoodle(page, source) {
     }),
     documents,
     warnings: [...new Set(warnings)],
-    extractorState: "structured",
+    extractorState: courses.length ? "structured" : "structured_empty",
   };
 }

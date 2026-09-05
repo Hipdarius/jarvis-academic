@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { downloadSchoolDocument } from "../documents.mjs";
 import { collectVisibleItems, navigateToSource, redactText, redactUrl } from "../inspection.mjs";
 import { normalizeTeamsRows } from "../normalization.mjs";
+import { syncTeamsContent } from "./teams-content.mjs";
 
 function boundedInteger(value, fallback, maximum) {
   const parsed = Number.parseInt(value ?? "", 10);
@@ -271,20 +272,33 @@ export async function syncTeams(page, source) {
   }
   detailedAssignments.push(...assignments.slice(maxAssignmentDetails));
   const downloaded = await downloadAssignmentFiles(page, detailedAssignments);
+  const content = await syncTeamsContent(page, source, Math.max(0, maxFiles - downloaded.documents.length))
+    .catch(() => ({ teams: [], channels: [], items: [], documents: [], warnings: ["teams_channel_read_failed"] }));
+  const normalizedAssignments = normalizeTeamsRows(detailedAssignments.map(publishableAssignment));
+  const items = [...new Map([...normalizedAssignments, ...content.items]
+    .map((item) => [item.sourceExternalId, item])).values()];
+  const documents = [...new Map([...downloaded.documents, ...content.documents]
+    .map((document) => [document.sourceExternalId, document])).values()];
+  const awaitingSchoolYear = content.warnings.includes("no_current_school_year_teams");
 
   return {
     source: source.key,
     syncedAt: new Date().toISOString(),
     health: teamsAssignmentHealth(health, openedAssignments, assignments.length, assignmentSurfaceError),
     visibleWorkspaceItems,
-    items: normalizeTeamsRows(detailedAssignments.map(publishableAssignment)),
-    documents: downloaded.documents,
+    teams: content.teams,
+    channels: content.channels,
+    items,
+    documents,
     warnings: [
       ...downloaded.warnings,
+      ...content.warnings.filter((warning) => warning !== "no_current_school_year_teams"),
       ...detailWarnings,
       ...(assignmentSurfaceError ? ["assignments_surface_error"] : []),
       ...(assignmentSurfaceMissing ? ["assignments_navigation_not_found"] : []),
     ],
-    extractorState: assignmentSurfaceError ? "attention" : detailedAssignments.length ? "structured" : "structured_empty",
+    extractorState: assignmentSurfaceError ? "attention"
+      : items.length || documents.length ? "structured"
+        : awaitingSchoolYear ? "awaiting_school_year" : "structured_empty",
   };
 }
